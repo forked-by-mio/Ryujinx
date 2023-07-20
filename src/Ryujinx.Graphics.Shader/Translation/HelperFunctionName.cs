@@ -9,6 +9,8 @@ namespace Ryujinx.Graphics.Shader.Translation
         SharedStore8,
         SharedStore16,
         TexelFetchScale,
+        TexelFetchScaleBindless,
         TextureSizeUnscale,
+        TextureSizeUnscaleBindless,
     }
 }

@@ -13,9 +13,15 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
     {
         private Dictionary<AstOperand, string> _locals;
 
+        public Dictionary<SamplerType, string> BindlessTextures { get; }
+        public Dictionary<SamplerType, string> BindlessImages { get; }
+
         public OperandManager()
         {
-            _locals = new Dictionary<AstOperand, string>();
+            _locals = new();
+
+            BindlessTextures = new();
+            BindlessImages = new();
         }
 
         public string DeclareLocal(AstOperand operand)

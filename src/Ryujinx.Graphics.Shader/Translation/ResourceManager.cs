@@ -14,9 +14,6 @@ namespace Ryujinx.Graphics.Shader.Translation
         private const int DefaultLocalMemorySize = 128;
         private const int DefaultSharedMemorySize = 4096;
 
-        // TODO: Non-hardcoded array size.
-        public const int SamplerArraySize = 4;
-
         private static readonly string[] _stagePrefixes = new string[] { "cp", "vp", "tcp", "tep", "gp", "fp" };
 
         private readonly IGpuAccessor _gpuAccessor;
@@ -32,7 +29,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private readonly HashSet<int> _usedConstantBufferBindings;
 
-        private readonly record struct TextureInfo(int CbufSlot, int Handle, bool Indexed, TextureFormat Format);
+        private readonly record struct TextureInfo(int CbufSlot, int Handle, TextureFormat Format);
 
         private struct TextureMeta
         {
@@ -112,6 +109,77 @@ namespace Ryujinx.Graphics.Shader.Translation
             {
                 SharedMemoryId = -1;
             }
+        }
+
+        public void EnsureBindlessBinding(TargetApi targetApi, SamplerType samplerType, bool isImage)
+        {
+            if (targetApi == TargetApi.Vulkan)
+            {
+                Properties.AddOrUpdateConstantBuffer(Constants.BindlessTableKey, new BufferDefinition(
+                    BufferLayout.Std140,
+                    Constants.BindlessTextureSetIndex,
+                    Constants.BindlessTableBinding,
+                    "bindless_table",
+                    new StructureType(new[] { new StructureField(AggregateType.Array | AggregateType.Vector2 | AggregateType.U32, "table", 0x1000) })));
+
+                Properties.AddOrUpdateStorageBuffer(Constants.BindlessScalesKey, new BufferDefinition(
+                    BufferLayout.Std430,
+                    Constants.BindlessTextureSetIndex,
+                    Constants.BindlessScalesBinding,
+                    "bindless_scales",
+                    new StructureType(new[] { new StructureField(AggregateType.Array | AggregateType.FP32, "scales", 0) })));
+
+                if (isImage)
+                {
+                    string name = $"bindless_{samplerType.ToGlslImageType(AggregateType.FP32)}";
+
+                    if (samplerType == SamplerType.TextureBuffer)
+                    {
+                        AddBindlessDefinition(8, 0, name, SamplerType.TextureBuffer);
+                    }
+                    else
+                    {
+                        AddBindlessDefinition(7, 0, name, samplerType);
+                    }
+                }
+                else
+                {
+                    string name = $"bindless_{(samplerType & ~SamplerType.Shadow).ToGlslSamplerType()}";
+
+                    if (samplerType == SamplerType.TextureBuffer)
+                    {
+                        AddBindlessSeparateDefinition(5, 0, name, SamplerType.TextureBuffer);
+                    }
+                    else
+                    {
+                        AddBindlessSeparateDefinition(4, 2, name, samplerType);
+                    }
+
+                    // Sampler
+                    AddBindlessDefinition(6, 0, "bindless_samplers", SamplerType.None);
+                }
+            }
+        }
+
+        private static int PackId(int setIndex, int binding)
+        {
+            // TODO: We should handle this properly, with a unique ID that will not overlap
+            // if we have the same type of resource with the same binding across different sets.
+            // Because right now only the binding is used as identifier, we need to make sure they don't overlap.
+            return (setIndex << 16) | binding;
+        }
+
+        private void AddBindlessDefinition(int set, int binding, string name, SamplerType samplerType)
+        {
+            int id = PackId(set, binding);
+            TextureDefinition definition = new(set, binding, name, samplerType, TextureFormat.Unknown, TextureUsageFlags.None, 0);
+            Properties.AddOrUpdateTexture(id, definition);
+        }
+
+        private void AddBindlessSeparateDefinition(int set, int binding, string name, SamplerType samplerType)
+        {
+            samplerType = (samplerType & ~SamplerType.Shadow) | SamplerType.Separate;
+            AddBindlessDefinition(set, binding, name, samplerType);
         }
 
         public int GetConstantBufferBinding(int slot)
@@ -227,7 +295,6 @@ namespace Ryujinx.Graphics.Shader.Translation
             bool coherent)
         {
             var dimensions = type.GetDimensions();
-            var isIndexed = type.HasFlag(SamplerType.Indexed);
             var dict = isImage ? _usedImages : _usedTextures;
 
             var usageFlags = TextureUsageFlags.None;
@@ -236,7 +303,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             {
                 usageFlags |= TextureUsageFlags.NeedsScaleValue;
 
-                var canScale = _stage.SupportsRenderScale() && !isIndexed && !write && dimensions == 2;
+                var canScale = _stage.SupportsRenderScale() && !write && dimensions == 2;
 
                 if (!canScale)
                 {
@@ -256,76 +323,65 @@ namespace Ryujinx.Graphics.Shader.Translation
                 usageFlags |= TextureUsageFlags.ImageCoherent;
             }
 
-            int arraySize = isIndexed ? SamplerArraySize : 1;
-            int firstBinding = -1;
-
-            for (int layer = 0; layer < arraySize; layer++)
+            var info = new TextureInfo(cbufSlot, handle, format);
+            var meta = new TextureMeta()
             {
-                var info = new TextureInfo(cbufSlot, handle + layer * 2, isIndexed, format);
-                var meta = new TextureMeta()
-                {
-                    AccurateType = accurateType,
-                    Type = type,
-                    UsageFlags = usageFlags
-                };
+                AccurateType = accurateType,
+                Type = type,
+                UsageFlags = usageFlags
+            };
 
-                int binding;
+            int binding;
 
-                if (dict.TryGetValue(info, out var existingMeta))
-                {
-                    dict[info] = MergeTextureMeta(meta, existingMeta);
-                    binding = existingMeta.Binding;
-                }
-                else
-                {
-                    bool isBuffer = (type & SamplerType.Mask) == SamplerType.TextureBuffer;
+            if (dict.TryGetValue(info, out var existingMeta))
+            {
+                dict[info] = MergeTextureMeta(meta, existingMeta);
+                binding = existingMeta.Binding;
+            }
+            else
+            {
+                bool isBuffer = (type & SamplerType.Mask) == SamplerType.TextureBuffer;
 
-                    binding = isImage
-                        ? _gpuAccessor.QueryBindingImage(dict.Count, isBuffer)
-                        : _gpuAccessor.QueryBindingTexture(dict.Count, isBuffer);
+                binding = isImage
+                    ? _gpuAccessor.QueryBindingImage(dict.Count, isBuffer)
+                    : _gpuAccessor.QueryBindingTexture(dict.Count, isBuffer);
 
-                    meta.Binding = binding;
+                meta.Binding = binding;
 
-                    dict.Add(info, meta);
-                }
-
-                string nameSuffix;
-
-                if (isImage)
-                {
-                    nameSuffix = cbufSlot < 0
-                        ? $"i_tcb_{handle:X}_{format.ToGlslFormat()}"
-                        : $"i_cb{cbufSlot}_{handle:X}_{format.ToGlslFormat()}";
-                }
-                else
-                {
-                    nameSuffix = cbufSlot < 0 ? $"t_tcb_{handle:X}" : $"t_cb{cbufSlot}_{handle:X}";
-                }
-
-                var definition = new TextureDefinition(
-                    isImage ? 3 : 2,
-                    binding,
-                    $"{_stagePrefix}_{nameSuffix}",
-                    meta.Type,
-                    info.Format,
-                    meta.UsageFlags);
-
-                if (isImage)
-                {
-                    Properties.AddOrUpdateImage(binding, definition);
-                }
-                else
-                {
-                    Properties.AddOrUpdateTexture(binding, definition);
-                }
-
-                if (layer == 0)
-                {
-                    firstBinding = binding;
-                }
+                dict.Add(info, meta);
             }
 
-            return firstBinding;
+            string nameSuffix;
+
+            if (isImage)
+            {
+                nameSuffix = cbufSlot < 0
+                    ? $"i_tcb_{handle:X}_{format.ToGlslFormat()}"
+                    : $"i_cb{cbufSlot}_{handle:X}_{format.ToGlslFormat()}";
+            }
+            else
+            {
+                nameSuffix = cbufSlot < 0 ? $"t_tcb_{handle:X}" : $"t_cb{cbufSlot}_{handle:X}";
+            }
+
+            var definition = new TextureDefinition(
+                isImage ? 3 : 2,
+                binding,
+                $"{_stagePrefix}_{nameSuffix}",
+                meta.Type,
+                info.Format,
+                meta.UsageFlags);
+
+            if (isImage)
+            {
+                Properties.AddOrUpdateImage(binding, definition);
+            }
+            else
+            {
+                Properties.AddOrUpdateTexture(binding, definition);
+            }
+
+            return binding;
         }
 
         private static TextureMeta MergeTextureMeta(TextureMeta meta, TextureMeta existingMeta)
@@ -366,8 +422,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 selectedMeta.UsageFlags |= TextureUsageFlags.NeedsScaleValue;
 
                 var dimensions = type.GetDimensions();
-                var isIndexed = type.HasFlag(SamplerType.Indexed);
-                var canScale = _stage.SupportsRenderScale() && !isIndexed && dimensions == 2;
+                var canScale = _stage.SupportsRenderScale() && dimensions == 2;
 
                 if (!canScale)
                 {

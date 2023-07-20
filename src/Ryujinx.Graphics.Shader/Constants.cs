@@ -16,5 +16,13 @@ namespace Ryujinx.Graphics.Shader
         public const int TfeInfoBinding = 0;
         public const int TfeBufferBaseBinding = 1;
         public const int TfeBuffersCount = 4;
+
+        // Bindless emulation.
+
+        public const int BindlessTextureSetIndex = 4;
+        public const int BindlessTableBinding = 0;
+        public const int BindlessScalesBinding = 1;
+        public const int BindlessTableKey = (BindlessTextureSetIndex << 16) | BindlessTableBinding;
+        public const int BindlessScalesKey = (BindlessTextureSetIndex << 16) | BindlessScalesBinding;
     }
 }

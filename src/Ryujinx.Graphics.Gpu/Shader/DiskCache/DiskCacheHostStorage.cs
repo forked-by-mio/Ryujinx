@@ -22,7 +22,7 @@ namespace Ryujinx.Graphics.Gpu.Shader.DiskCache
         private const ushort FileFormatVersionMajor = 1;
         private const ushort FileFormatVersionMinor = 2;
         private const uint FileFormatVersionPacked = ((uint)FileFormatVersionMajor << 16) | FileFormatVersionMinor;
-        private const uint CodeGenVersion = 5266;
+        private const uint CodeGenVersion = 3001;
 
         private const string SharedTocFileName = "shared.toc";
         private const string SharedDataFileName = "shared.data";
@@ -164,6 +164,11 @@ namespace Ryujinx.Graphics.Gpu.Shader.DiskCache
             /// Indicates if the vertex shader accesses draw parameters.
             /// </summary>
             public bool UsesDrawParameters;
+
+            /// <summary>
+            /// Flags indicating if and how bindless texture accesses were translated for the shader stage.
+            /// </summary>
+            public BindlessTextureFlags BindlessTextureFlags;
         }
 
         private readonly DiskCacheGuestStorage _guestStorage;
@@ -781,6 +786,7 @@ namespace Ryujinx.Graphics.Gpu.Shader.DiskCache
                 ShaderIdentification.None,
                 0,
                 dataInfo.Stage,
+                dataInfo.BindlessTextureFlags,
                 dataInfo.UsesInstanceId,
                 dataInfo.UsesDrawParameters,
                 dataInfo.UsesRtLayer,
@@ -807,6 +813,7 @@ namespace Ryujinx.Graphics.Gpu.Shader.DiskCache
                 TexturesCount = (ushort)info.Textures.Count,
                 ImagesCount = (ushort)info.Images.Count,
                 Stage = info.Stage,
+                BindlessTextureFlags = info.BindlessTextureFlags,
                 UsesInstanceId = info.UsesInstanceId,
                 UsesDrawParameters = info.UsesDrawParameters,
                 UsesRtLayer = info.UsesRtLayer,

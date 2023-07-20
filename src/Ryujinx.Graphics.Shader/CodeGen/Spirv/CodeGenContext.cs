@@ -24,17 +24,19 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
         public int InputVertices { get; }
 
-        public Dictionary<int, Instruction> ConstantBuffers { get; } = new Dictionary<int, Instruction>();
-        public Dictionary<int, Instruction> StorageBuffers { get; } = new Dictionary<int, Instruction>();
-        public Dictionary<int, Instruction> LocalMemories { get; } = new Dictionary<int, Instruction>();
-        public Dictionary<int, Instruction> SharedMemories { get; } = new Dictionary<int, Instruction>();
-        public Dictionary<int, SamplerType> SamplersTypes { get; } = new Dictionary<int, SamplerType>();
-        public Dictionary<int, (Instruction, Instruction, Instruction)> Samplers { get; } = new Dictionary<int, (Instruction, Instruction, Instruction)>();
-        public Dictionary<int, (Instruction, Instruction)> Images { get; } = new Dictionary<int, (Instruction, Instruction)>();
-        public Dictionary<IoDefinition, Instruction> Inputs { get; } = new Dictionary<IoDefinition, Instruction>();
-        public Dictionary<IoDefinition, Instruction> Outputs { get; } = new Dictionary<IoDefinition, Instruction>();
-        public Dictionary<IoDefinition, Instruction> InputsPerPatch { get; } = new Dictionary<IoDefinition, Instruction>();
-        public Dictionary<IoDefinition, Instruction> OutputsPerPatch { get; } = new Dictionary<IoDefinition, Instruction>();
+        public Dictionary<int, Instruction> ConstantBuffers { get; } = new();
+        public Dictionary<int, Instruction> StorageBuffers { get; } = new();
+        public Dictionary<int, Instruction> LocalMemories { get; } = new();
+        public Dictionary<int, Instruction> SharedMemories { get; } = new();
+        public Dictionary<int, SamplerType> SamplersTypes { get; } = new();
+        public Dictionary<int, (Instruction, Instruction, Instruction)> Samplers { get; } = new();
+        public Dictionary<int, (Instruction, Instruction)> Images { get; } = new();
+        public Dictionary<IoDefinition, Instruction> Inputs { get; } = new();
+        public Dictionary<SamplerType, (Instruction, Instruction, Instruction, Instruction)> BindlessTextures { get; } = new();
+        public Dictionary<SamplerType, (Instruction, Instruction, Instruction)> BindlessImages { get; } = new();
+        public Dictionary<IoDefinition, Instruction> Outputs { get; } = new();
+        public Dictionary<IoDefinition, Instruction> InputsPerPatch { get; } = new();
+        public Dictionary<IoDefinition, Instruction> OutputsPerPatch { get; } = new();
 
         public StructuredFunction CurrentFunction { get; set; }
         private readonly Dictionary<AstOperand, Instruction> _locals = new();

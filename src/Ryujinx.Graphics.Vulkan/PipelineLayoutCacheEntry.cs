@@ -1,5 +1,6 @@
 using Ryujinx.Graphics.GAL;
 using Silk.NET.Vulkan;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 
@@ -7,6 +8,9 @@ namespace Ryujinx.Graphics.Vulkan
 {
     class PipelineLayoutCacheEntry
     {
+        private const uint DescriptorPoolMultiplier = 4;
+        private const int MaxPoolSizesPerSet = 3;
+
         private readonly VulkanRenderer _gd;
         private readonly Device _device;
 
@@ -16,6 +20,9 @@ namespace Ryujinx.Graphics.Vulkan
         private readonly List<Auto<DescriptorSetCollection>>[][] _dsCache;
         private readonly int[] _dsCacheCursor;
         private int _dsLastCbIndex;
+
+        private readonly uint _bindlessTexturesCount;
+        private readonly uint _bindlessSamplersCount;
 
         private PipelineLayoutCacheEntry(VulkanRenderer gd, Device device, int setsCount)
         {
@@ -30,7 +37,7 @@ namespace Ryujinx.Graphics.Vulkan
 
                 for (int j = 0; j < _dsCache[i].Length; j++)
                 {
-                    _dsCache[i][j] = new List<Auto<DescriptorSetCollection>>();
+                    _dsCache[i][j] = new();
                 }
             }
 
@@ -41,9 +48,11 @@ namespace Ryujinx.Graphics.Vulkan
             VulkanRenderer gd,
             Device device,
             ReadOnlyCollection<ResourceDescriptorCollection> setDescriptors,
-            bool usePushDescriptors) : this(gd, device, setDescriptors.Count)
+            PipelineLayoutUsageInfo usageInfo) : this(gd, device, setDescriptors.Count)
         {
-            (DescriptorSetLayouts, PipelineLayout) = PipelineLayoutFactory.Create(gd, device, setDescriptors, usePushDescriptors);
+            (DescriptorSetLayouts, PipelineLayout) = PipelineLayoutFactory.Create(gd, device, setDescriptors, usageInfo);
+            _bindlessSamplersCount = usageInfo.BindlessSamplersCount;
+            _bindlessTexturesCount = usageInfo.BindlessTexturesCount;
         }
 
         public Auto<DescriptorSetCollection> GetNewDescriptorSetCollection(
@@ -66,7 +75,15 @@ namespace Ryujinx.Graphics.Vulkan
             int index = _dsCacheCursor[setIndex]++;
             if (index == list.Count)
             {
-                var dsc = gd.DescriptorSetManager.AllocateDescriptorSet(gd.Api, DescriptorSetLayouts[setIndex]);
+                Span<DescriptorPoolSize> poolSizes = stackalloc DescriptorPoolSize[MaxPoolSizesPerSet];
+                poolSizes = GetDescriptorPoolSizes(poolSizes, setIndex);
+
+                // All bindless resources have the update after bind flag set,
+                // this is required for Intel, otherwise it just crashes when binding the descriptor sets
+                // for bindless resources (maybe because it is above the limit?)
+                bool updateAfterBind = setIndex >= PipelineBase.BindlessBufferTextureSetIndex;
+
+                var dsc = gd.DescriptorSetManager.AllocateDescriptorSet(gd.Api, DescriptorSetLayouts[setIndex], poolSizes, updateAfterBind);
                 list.Add(dsc);
                 isNew = true;
                 return dsc;
@@ -74,6 +91,52 @@ namespace Ryujinx.Graphics.Vulkan
 
             isNew = false;
             return list[index];
+        }
+
+        private Span<DescriptorPoolSize> GetDescriptorPoolSizes(Span<DescriptorPoolSize> output, int setIndex)
+        {
+            uint multiplier = DescriptorPoolMultiplier;
+            int count = 1;
+
+            switch (setIndex)
+            {
+                case PipelineBase.UniformSetIndex:
+                    output[0] = new(DescriptorType.UniformBuffer, (1 + Constants.MaxUniformBufferBindings) * multiplier);
+                    break;
+                case PipelineBase.StorageSetIndex:
+                    output[0] = new(DescriptorType.StorageBuffer, Constants.MaxStorageBufferBindings * multiplier);
+                    break;
+                case PipelineBase.TextureSetIndex:
+                    output[0] = new(DescriptorType.CombinedImageSampler, Constants.MaxTextureBindings * multiplier);
+                    output[1] = new(DescriptorType.UniformTexelBuffer, Constants.MaxTextureBindings * multiplier);
+                    count = 2;
+                    break;
+                case PipelineBase.ImageSetIndex:
+                    output[0] = new(DescriptorType.StorageImage, Constants.MaxImageBindings * multiplier);
+                    output[1] = new(DescriptorType.StorageTexelBuffer, Constants.MaxImageBindings * multiplier);
+                    count = 2;
+                    break;
+                case PipelineBase.BindlessTexturesSetIndex:
+                    output[0] = new(DescriptorType.UniformBuffer, 1);
+                    output[1] = new(DescriptorType.StorageBuffer, 1);
+                    output[2] = new(DescriptorType.SampledImage, _bindlessTexturesCount);
+                    count = 3;
+                    break;
+                case PipelineBase.BindlessBufferTextureSetIndex:
+                    output[0] = new(DescriptorType.UniformTexelBuffer, _bindlessTexturesCount);
+                    break;
+                case PipelineBase.BindlessSamplersSetIndex:
+                    output[0] = new(DescriptorType.Sampler, _bindlessSamplersCount);
+                    break;
+                case PipelineBase.BindlessImagesSetIndex:
+                    output[0] = new(DescriptorType.StorageImage, _bindlessTexturesCount);
+                    break;
+                case PipelineBase.BindlessBufferImageSetIndex:
+                    output[0] = new(DescriptorType.StorageTexelBuffer, _bindlessTexturesCount);
+                    break;
+            }
+
+            return output.Slice(0, count);
         }
 
         protected virtual unsafe void Dispose(bool disposing)

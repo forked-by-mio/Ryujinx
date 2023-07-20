@@ -116,7 +116,7 @@ namespace Ryujinx.Graphics.Gpu.Shader
         /// <param name="hasConstantBufferDrawParameters">Indicates that the draw is writing the base vertex, base instance and draw index to Constant Buffer 0</param>
         /// <param name="hasUnalignedStorageBuffer">Indicates that any storage buffer use is unaligned</param>
         /// <param name="fragmentOutputTypes">Type of the fragment shader outputs</param>
-        /// <param name="dualSourceBlendEnable">Type of the vertex attributes consumed by the shader</param>
+        /// <param name="dualSourceBlendEnable">Indicates whether dual source blend is enabled</param>
         public GpuChannelGraphicsState(
             bool earlyZForce,
             PrimitiveTopology topology,

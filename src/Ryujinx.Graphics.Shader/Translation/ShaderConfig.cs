@@ -87,6 +87,9 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         public FeatureFlags UsedFeatures { get; private set; }
 
+        public BindlessTextureFlags BindlessTextureFlags { get; set; }
+        public bool FullBindlessAllowed { get; private set; }
+
         public int Cb1DataSize { get; private set; }
 
         public bool LayerOutputWritten { get; private set; }
@@ -605,6 +608,11 @@ namespace Ryujinx.Graphics.Shader.Translation
             UsedFeatures |= flags;
         }
 
+        public void SetFullBindlessAllowed(bool fullBindlessAllowed)
+        {
+            FullBindlessAllowed = fullBindlessAllowed;
+        }
+
         public ShaderProgramInfo CreateProgramInfo(ShaderIdentification identification = ShaderIdentification.None)
         {
             return new ShaderProgramInfo(
@@ -615,6 +623,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 identification,
                 GpLayerInputAttribute,
                 Stage,
+                BindlessTextureFlags,
                 UsedFeatures.HasFlag(FeatureFlags.InstanceId),
                 UsedFeatures.HasFlag(FeatureFlags.DrawParameters),
                 UsedFeatures.HasFlag(FeatureFlags.RtLayer),

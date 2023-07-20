@@ -17,6 +17,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             bool hasConstantBufferDrawParameters = config.GpuAccessor.QueryHasConstantBufferDrawParameters();
             bool hasVectorIndexingBug = config.GpuAccessor.QueryHostHasVectorIndexingBug();
             bool supportsSnormBufferTextureFormat = config.GpuAccessor.QueryHostSupportsSnormBufferTextureFormat();
+            int textureBufferIndex = config.GpuAccessor.QueryTextureBufferIndex();
 
             for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
             {
@@ -56,18 +57,24 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                     if (operation is TextureOperation texOp)
                     {
-                        node = InsertTexelFetchScale(hfm, node, config);
-                        node = InsertTextureSizeUnscale(hfm, node, config);
+                        LinkedListNode<INode> prevNode = node;
+                        node = TurnIntoBindlessIfExceeding(node, config, textureBufferIndex);
 
-                        if (texOp.Inst == Instruction.TextureSample)
+                        if (prevNode == node)
                         {
-                            node = InsertCoordNormalization(hfm, node, config);
-                            node = InsertCoordGatherBias(node, config);
-                            node = InsertConstOffsets(node, config);
+                            node = InsertTexelFetchScale(hfm, node, config);
+                            node = InsertTextureSizeUnscale(hfm, node, config);
 
-                            if (texOp.Type == SamplerType.TextureBuffer && !supportsSnormBufferTextureFormat)
+                            if (texOp.Inst == Instruction.TextureSample)
                             {
-                                node = InsertSnormNormalization(node, config);
+                                node = InsertCoordNormalization(hfm, node, config);
+                                node = InsertCoordGatherBias(node, config);
+                                node = InsertConstOffsets(node, config);
+
+                                if (texOp.Type == SamplerType.TextureBuffer && !supportsSnormBufferTextureFormat)
+                                {
+                                    node = InsertSnormNormalization(node, config);
+                                }
                             }
                         }
                     }
@@ -268,25 +275,34 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             bool isBindless = (texOp.Flags & TextureFlags.Bindless) != 0;
             bool intCoords = (texOp.Flags & TextureFlags.IntCoords) != 0;
-            bool isIndexed = (texOp.Type & SamplerType.Indexed) != 0;
 
             int coordsCount = texOp.Type.GetDimensions();
 
-            int coordsIndex = isBindless || isIndexed ? 1 : 0;
+            int coordsIndex = isBindless ? 1 : 0;
 
             bool isImage = IsImageInstructionWithScale(texOp.Inst);
 
             if ((texOp.Inst == Instruction.TextureSample || isImage) &&
                 (intCoords || isImage) &&
-                !isBindless &&
-                !isIndexed &&
+                (!isBindless || config.Options.TargetApi == TargetApi.Vulkan) && // TODO: OpenGL support.
                 config.Stage.SupportsRenderScale() &&
                 TypeSupportsScale(texOp.Type))
             {
-                int functionId = hfm.GetOrCreateFunctionId(HelperFunctionName.TexelFetchScale);
-                int samplerIndex = isImage
-                    ? config.ResourceManager.GetTextureDescriptors().Length + config.ResourceManager.FindImageDescriptorIndex(texOp.Binding)
-                    : config.ResourceManager.FindTextureDescriptorIndex(texOp.Binding);
+                int functionId;
+                Operand samplerIndex;
+
+                if (isBindless)
+                {
+                    functionId = hfm.GetOrCreateFunctionId(HelperFunctionName.TexelFetchScaleBindless);
+                    samplerIndex = texOp.GetSource(0);
+                }
+                else
+                {
+                    functionId = hfm.GetOrCreateFunctionId(HelperFunctionName.TexelFetchScale);
+                    samplerIndex = isImage
+                        ? Const(config.ResourceManager.GetTextureDescriptors().Length + config.ResourceManager.FindImageDescriptorIndex(texOp.Binding))
+                        : Const(config.ResourceManager.FindTextureDescriptorIndex(texOp.Binding));
+                }
 
                 for (int index = 0; index < coordsCount; index++)
                 {
@@ -295,11 +311,11 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                     if (config.Stage == ShaderStage.Fragment)
                     {
-                        callArgs = new Operand[] { Const(functionId), texOp.GetSource(coordsIndex + index), Const(samplerIndex), Const(index) };
+                        callArgs = new Operand[] { Const(functionId), texOp.GetSource(coordsIndex + index), samplerIndex, Const(index) };
                     }
                     else
                     {
-                        callArgs = new Operand[] { Const(functionId), texOp.GetSource(coordsIndex + index), Const(samplerIndex) };
+                        callArgs = new Operand[] { Const(functionId), texOp.GetSource(coordsIndex + index), samplerIndex };
                     }
 
                     node.List.AddBefore(node, new Operation(Instruction.Call, 0, scaledCoord, callArgs));
@@ -316,17 +332,26 @@ namespace Ryujinx.Graphics.Shader.Translation
             TextureOperation texOp = (TextureOperation)node.Value;
 
             bool isBindless = (texOp.Flags & TextureFlags.Bindless) != 0;
-            bool isIndexed = (texOp.Type & SamplerType.Indexed) != 0;
 
             if (texOp.Inst == Instruction.TextureSize &&
                 texOp.Index < 2 &&
-                !isBindless &&
-                !isIndexed &&
+                (!isBindless || config.Options.TargetApi == TargetApi.Vulkan) && // TODO: OpenGL support.
                 config.Stage.SupportsRenderScale() &&
                 TypeSupportsScale(texOp.Type))
             {
-                int functionId = hfm.GetOrCreateFunctionId(HelperFunctionName.TextureSizeUnscale);
-                int samplerIndex = config.ResourceManager.FindTextureDescriptorIndex(texOp.Binding);
+                int functionId;
+                Operand samplerIndex;
+
+                if (isBindless)
+                {
+                    functionId = hfm.GetOrCreateFunctionId(HelperFunctionName.TextureSizeUnscaleBindless);
+                    samplerIndex = texOp.GetSource(0);
+                }
+                else
+                {
+                    functionId = hfm.GetOrCreateFunctionId(HelperFunctionName.TextureSizeUnscale);
+                    samplerIndex = Const(config.ResourceManager.FindTextureDescriptorIndex(texOp.Binding));
+                }
 
                 for (int index = texOp.DestsCount - 1; index >= 0; index--)
                 {
@@ -347,7 +372,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                         }
                     }
 
-                    Operand[] callArgs = new Operand[] { Const(functionId), dest, Const(samplerIndex) };
+                    Operand[] callArgs = new Operand[] { Const(functionId), dest, samplerIndex };
 
                     node.List.AddAfter(node, new Operation(Instruction.Call, 0, unscaledSize, callArgs));
                 }
@@ -395,10 +420,8 @@ namespace Ryujinx.Graphics.Shader.Translation
                 return node;
             }
 
-            bool isIndexed = (texOp.Type & SamplerType.Indexed) != 0;
-
             int coordsCount = texOp.Type.GetDimensions();
-            int coordsIndex = isBindless || isIndexed ? 1 : 0;
+            int coordsIndex = isBindless ? 1 : 0;
 
             config.SetUsedFeature(FeatureFlags.IntegerSampling);
 
@@ -410,7 +433,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                 Operand[] texSizeSources;
 
-                if (isBindless || isIndexed)
+                if (isBindless)
                 {
                     texSizeSources = new Operand[] { texOp.GetSource(0), Const(0) };
                 }
@@ -464,15 +487,8 @@ namespace Ryujinx.Graphics.Shader.Translation
                 return node;
             }
 
-#pragma warning disable IDE0059 // Remove unnecessary value assignment
-            bool intCoords = (texOp.Flags & TextureFlags.IntCoords) != 0;
-
-            bool isArray = (texOp.Type & SamplerType.Array) != 0;
-            bool isIndexed = (texOp.Type & SamplerType.Indexed) != 0;
-#pragma warning restore IDE0059
-
             int coordsCount = texOp.Type.GetDimensions();
-            int coordsIndex = isBindless || isIndexed ? 1 : 0;
+            int coordsIndex = isBindless ? 1 : 0;
 
             config.SetUsedFeature(FeatureFlags.IntegerSampling);
 
@@ -486,7 +502,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                 Operand[] texSizeSources;
 
-                if (isBindless || isIndexed)
+                if (isBindless)
                 {
                     texSizeSources = new Operand[] { texOp.GetSource(0), Const(0) };
                 }
@@ -556,7 +572,6 @@ namespace Ryujinx.Graphics.Shader.Translation
             bool hasLodLevel = (texOp.Flags & TextureFlags.LodLevel) != 0;
 
             bool isArray = (texOp.Type & SamplerType.Array) != 0;
-            bool isIndexed = (texOp.Type & SamplerType.Indexed) != 0;
             bool isMultisample = (texOp.Type & SamplerType.Multisample) != 0;
             bool isShadow = (texOp.Type & SamplerType.Shadow) != 0;
 
@@ -582,7 +597,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             int copyCount = 0;
 
-            if (isBindless || isIndexed)
+            if (isBindless)
             {
                 copyCount++;
             }
@@ -656,7 +671,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 sources[dstIndex++] = texOp.GetSource(srcIndex++);
             }
 
-            int coordsIndex = isBindless || isIndexed ? 1 : 0;
+            int coordsIndex = isBindless ? 1 : 0;
 
             int componentIndex = texOp.Index;
 
@@ -667,7 +682,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 dests[i] = texOp.GetDest(i);
             }
 
-            Operand bindlessHandle = isBindless || isIndexed ? sources[0] : null;
+            Operand bindlessHandle = isBindless ? sources[0] : null;
 
             LinkedListNode<INode> oldNode = node;
 
@@ -983,6 +998,108 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
 
             return false;
+        }
+
+        private static LinkedListNode<INode> TurnIntoBindlessIfExceeding(LinkedListNode<INode> node, ShaderConfig config, int textureBufferIndex)
+        {
+            if (!(node.Value is TextureOperation texOp))
+            {
+                return node;
+            }
+
+            // If it's already bindless, then we have nothing to do.
+            if (texOp.Flags.HasFlag(TextureFlags.Bindless))
+            {
+                config.ResourceManager.EnsureBindlessBinding(config.Options.TargetApi, texOp.Type, texOp.Inst.IsImage());
+
+                if (IsIndexedAccess(config, texOp, textureBufferIndex))
+                {
+                    config.BindlessTextureFlags |= BindlessTextureFlags.BindlessNvn;
+                    return node;
+                }
+
+                if (config.FullBindlessAllowed)
+                {
+                    config.BindlessTextureFlags |= BindlessTextureFlags.BindlessFull;
+                    return node;
+                }
+                else
+                {
+                    // Set any destination operand to zero and remove the texture access.
+                    // This is a case where bindless elimination failed, and we assume
+                    // it's too risky to try using full bindless emulation.
+
+                    for (int destIndex = 0; destIndex < texOp.DestsCount; destIndex++)
+                    {
+                        Operand dest = texOp.GetDest(destIndex);
+                        node.List.AddBefore(node, new Operation(Instruction.Copy, dest, Const(0)));
+                    }
+
+                    LinkedListNode<INode> prevNode = node.Previous;
+                    node.List.Remove(node);
+
+                    return prevNode;
+                }
+            }
+
+            // If the index is within the host API limits, then we don't need to make it bindless.
+            int index = config.ResourceManager.FindTextureDescriptorIndex(texOp.Binding);
+            if (index < TextureHandle.GetMaxTexturesPerStage(config.Options.TargetApi))
+            {
+                return node;
+            }
+
+            TextureDescriptor descriptor = config.ResourceManager.GetTextureDescriptors()[index];
+
+            (int textureWordOffset, int samplerWordOffset, TextureHandleType handleType) = TextureHandle.UnpackOffsets(descriptor.HandleIndex);
+            (int textureCbufSlot, int samplerCbufSlot) = TextureHandle.UnpackSlots(descriptor.CbufSlot, textureBufferIndex);
+
+            Operand handle = Cbuf(textureCbufSlot, textureWordOffset);
+
+            if (handleType != TextureHandleType.CombinedSampler)
+            {
+                Operand handle2 = Cbuf(samplerCbufSlot, samplerWordOffset);
+
+                if (handleType == TextureHandleType.SeparateSamplerId)
+                {
+                    Operand temp = Local();
+                    node.List.AddBefore(node, new Operation(Instruction.ShiftLeft, temp, handle2, Const(20)));
+                    handle2 = temp;
+                }
+
+                Operand handleCombined = Local();
+                node.List.AddBefore(node, new Operation(Instruction.BitwiseOr, handleCombined, handle, handle2));
+                handle = handleCombined;
+            }
+
+            texOp.TurnIntoBindless(handle);
+            config.BindlessTextureFlags |= BindlessTextureFlags.BindlessConverted;
+
+            config.ResourceManager.EnsureBindlessBinding(config.Options.TargetApi, texOp.Type, texOp.Inst.IsImage());
+
+            return node;
+        }
+
+        private static bool IsIndexedAccess(ShaderConfig config, TextureOperation texOp, int textureBufferIndex)
+        {
+            // Try to detect a indexed access.
+            // The access is considered indexed if the handle is loaded with a LDC instruction
+            // from the driver reserved constant buffer used for texture handles.
+            if (!(texOp.GetSource(0).AsgOp is Operation handleAsgOp))
+            {
+                return false;
+            }
+
+            if (handleAsgOp.Inst != Instruction.Load || handleAsgOp.StorageKind != StorageKind.ConstantBuffer)
+            {
+                return false;
+            }
+
+            Operand ldcSrc0 = handleAsgOp.GetSource(0);
+
+            return ldcSrc0.Type == OperandType.Constant &&
+                   config.ResourceManager.TryGetConstantBufferSlot(ldcSrc0.Value, out int cbSlot) &&
+                   cbSlot == textureBufferIndex;
         }
     }
 }

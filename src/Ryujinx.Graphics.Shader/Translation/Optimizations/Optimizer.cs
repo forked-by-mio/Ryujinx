@@ -16,11 +16,35 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             GlobalToStorage.RunPass(hfm, blocks, config);
 
             bool hostSupportsShaderFloat64 = config.GpuAccessor.QueryHostSupportsShaderFloat64();
+            bool fullBindlessAllowed = true;
+            int textureBufferIndex = config.GpuAccessor.QueryTextureBufferIndex();
 
             // Those passes are looking for specific patterns and only needs to run once.
             for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
             {
-                BindlessToIndexed.RunPass(blocks[blkIndex], config);
+                if (textureBufferIndex == TextureHandle.NvnTextureBufferIndex)
+                {
+                    BasicBlock block = blocks[blkIndex];
+
+                    for (LinkedListNode<INode> node = block.Operations.First; node != null; node = node.Next)
+                    {
+                        for (int index = 0; index < node.Value.SourcesCount; index++)
+                        {
+                            Operand src = node.Value.GetSource(index);
+
+                            // The shader accessing constant buffer 2 is an indication that
+                            // the bindless access is for separate texture/sampler combinations.
+                            // Bindless elimination should be able to take care of that, but if it doesn't,
+                            // we still don't want to use full bindless for those cases
+                            if (src.Type == OperandType.ConstantBuffer && src.GetCbufSlot() == textureBufferIndex)
+                            {
+                                fullBindlessAllowed = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 BindlessElimination.RunPass(blocks[blkIndex], config);
 
                 // FragmentCoord only exists on fragment shaders, so we don't need to check other stages.
@@ -35,6 +59,8 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     DoubleToFloat.RunPass(hfm, blocks[blkIndex]);
                 }
             }
+
+            config.SetFullBindlessAllowed(fullBindlessAllowed);
 
             // Run optimizations one last time to remove any code that is now optimizable after above passes.
             RunOptimizationPasses(blocks, config);

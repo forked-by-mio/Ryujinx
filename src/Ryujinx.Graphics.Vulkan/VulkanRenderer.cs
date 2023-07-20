@@ -416,7 +416,7 @@ namespace Ryujinx.Graphics.Vulkan
 
             if (info.State.HasValue || isCompute)
             {
-                return new ShaderCollection(this, _device, sources, info.ResourceLayout, info.State ?? default, info.FromCache);
+                return new ShaderCollection(this, _device, sources, info.ResourceLayout, info.State ?? default, info.HasBindless, info.FromCache);
             }
 
             return new ShaderCollection(this, _device, sources, info.ResourceLayout);

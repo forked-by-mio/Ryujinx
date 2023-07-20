@@ -18,6 +18,8 @@ namespace Ryujinx.Graphics.Gpu.Shader
 
         private readonly int _reservedConstantBuffers;
         private readonly int _reservedStorageBuffers;
+        private readonly int _reservedTextures;
+        private readonly int _reservedImages;
 
         /// <summary>
         /// Creates a new GPU accessor.
@@ -34,6 +36,12 @@ namespace Ryujinx.Graphics.Gpu.Shader
 
             _reservedConstantBuffers = 1; // For the support buffer.
             _reservedStorageBuffers = !context.Capabilities.SupportsTransformFeedback && tfEnabled ? 5 : 0;
+
+            if (context.Capabilities.Api == TargetApi.OpenGL)
+            {
+                // Used for bindless emulation.
+                _reservedTextures = 2;
+            }
         }
 
         public int QueryBindingConstantBuffer(int index)
@@ -70,6 +78,8 @@ namespace Ryujinx.Graphics.Gpu.Shader
 
         public int QueryBindingTexture(int index, bool isBuffer)
         {
+            int binding;
+
             if (_context.Capabilities.Api == TargetApi.Vulkan)
             {
                 if (isBuffer)
@@ -77,16 +87,20 @@ namespace Ryujinx.Graphics.Gpu.Shader
                     index += (int)_context.Capabilities.MaximumTexturesPerStage;
                 }
 
-                return GetBindingFromIndex(index, _context.Capabilities.MaximumTexturesPerStage * 2, "Texture");
+                binding = GetBindingFromIndex(index, _context.Capabilities.MaximumTexturesPerStage * 2, "Texture");
             }
             else
             {
-                return _resourceCounts.TexturesCount++;
+                binding = _resourceCounts.TexturesCount++;
             }
+
+            return binding + _reservedTextures;
         }
 
         public int QueryBindingImage(int index, bool isBuffer)
         {
+            int binding;
+
             if (_context.Capabilities.Api == TargetApi.Vulkan)
             {
                 if (isBuffer)
@@ -94,12 +108,14 @@ namespace Ryujinx.Graphics.Gpu.Shader
                     index += (int)_context.Capabilities.MaximumImagesPerStage;
                 }
 
-                return GetBindingFromIndex(index, _context.Capabilities.MaximumImagesPerStage * 2, "Image");
+                binding = GetBindingFromIndex(index, _context.Capabilities.MaximumImagesPerStage * 2, "Image");
             }
             else
             {
-                return _resourceCounts.ImagesCount++;
+                binding = _resourceCounts.ImagesCount++;
             }
+
+            return binding + _reservedImages;
         }
 
         private int GetBindingFromIndex(int index, uint maxPerStage, string resourceName)

@@ -154,6 +154,7 @@ namespace Ryujinx.Graphics.OpenGL
                 supportsGeometryShader: true,
                 supportsGeometryShaderPassthrough: HwCapabilities.SupportsGeometryShaderPassthrough,
                 supportsTransformFeedback: true,
+                supportsImageBufferPixelAlignment: false,
                 supportsImageLoadFormatted: HwCapabilities.SupportsImageLoadFormatted,
                 supportsLayerVertexTessellation: HwCapabilities.SupportsShaderViewportLayerArray,
                 supportsMismatchingViewFormat: HwCapabilities.SupportsMismatchingViewFormat,
@@ -162,6 +163,7 @@ namespace Ryujinx.Graphics.OpenGL
                 supportsShaderBallot: HwCapabilities.SupportsShaderBallot,
                 supportsShaderBarrierDivergence: !(intelWindows || intelUnix),
                 supportsShaderFloat64: true,
+                supportsTextureBufferPixelAlignment: false,
                 supportsTextureShadowLod: HwCapabilities.SupportsTextureShadowLod,
                 supportsViewportIndexVertexTessellation: HwCapabilities.SupportsShaderViewportLayerArray,
                 supportsViewportMask: HwCapabilities.SupportsViewportArray2,
@@ -175,6 +177,7 @@ namespace Ryujinx.Graphics.OpenGL
                 maximumComputeSharedMemorySize: HwCapabilities.MaximumComputeSharedMemorySize,
                 maximumSupportedAnisotropy: HwCapabilities.MaximumSupportedAnisotropy,
                 storageBufferOffsetAlignment: HwCapabilities.StorageBufferOffsetAlignment,
+                textureBufferOffsetAlignment: HwCapabilities.TextureBufferOffsetAlignment,
                 gatherBiasPrecision: intelWindows || amdWindows ? 8 : 0); // Precision is 8 for these vendors on Vulkan.
         }
 

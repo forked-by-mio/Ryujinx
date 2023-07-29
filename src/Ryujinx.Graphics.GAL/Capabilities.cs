@@ -29,6 +29,7 @@ namespace Ryujinx.Graphics.GAL
         public readonly bool SupportsGeometryShader;
         public readonly bool SupportsGeometryShaderPassthrough;
         public readonly bool SupportsTransformFeedback;
+        public readonly bool SupportsImageBufferPixelAlignment;
         public readonly bool SupportsImageLoadFormatted;
         public readonly bool SupportsLayerVertexTessellation;
         public readonly bool SupportsMismatchingViewFormat;
@@ -37,6 +38,7 @@ namespace Ryujinx.Graphics.GAL
         public readonly bool SupportsShaderBallot;
         public readonly bool SupportsShaderBarrierDivergence;
         public readonly bool SupportsShaderFloat64;
+        public readonly bool SupportsTextureBufferPixelAlignment;
         public readonly bool SupportsTextureShadowLod;
         public readonly bool SupportsViewportIndexVertexTessellation;
         public readonly bool SupportsViewportMask;
@@ -52,6 +54,7 @@ namespace Ryujinx.Graphics.GAL
         public readonly int MaximumComputeSharedMemorySize;
         public readonly float MaximumSupportedAnisotropy;
         public readonly int StorageBufferOffsetAlignment;
+        public readonly int TextureBufferOffsetAlignment;
 
         public readonly int GatherBiasPrecision;
 
@@ -79,6 +82,7 @@ namespace Ryujinx.Graphics.GAL
             bool supportsGeometryShader,
             bool supportsGeometryShaderPassthrough,
             bool supportsTransformFeedback,
+            bool supportsImageBufferPixelAlignment,
             bool supportsImageLoadFormatted,
             bool supportsLayerVertexTessellation,
             bool supportsMismatchingViewFormat,
@@ -87,6 +91,7 @@ namespace Ryujinx.Graphics.GAL
             bool supportsShaderBallot,
             bool supportsShaderBarrierDivergence,
             bool supportsShaderFloat64,
+            bool supportsTextureBufferPixelAlignment,
             bool supportsTextureShadowLod,
             bool supportsViewportIndexVertexTessellation,
             bool supportsViewportMask,
@@ -100,6 +105,7 @@ namespace Ryujinx.Graphics.GAL
             int maximumComputeSharedMemorySize,
             float maximumSupportedAnisotropy,
             int storageBufferOffsetAlignment,
+            int textureBufferOffsetAlignment,
             int gatherBiasPrecision)
         {
             Api = api;
@@ -125,6 +131,7 @@ namespace Ryujinx.Graphics.GAL
             SupportsGeometryShader = supportsGeometryShader;
             SupportsGeometryShaderPassthrough = supportsGeometryShaderPassthrough;
             SupportsTransformFeedback = supportsTransformFeedback;
+            SupportsImageBufferPixelAlignment = supportsImageBufferPixelAlignment;
             SupportsImageLoadFormatted = supportsImageLoadFormatted;
             SupportsLayerVertexTessellation = supportsLayerVertexTessellation;
             SupportsMismatchingViewFormat = supportsMismatchingViewFormat;
@@ -133,6 +140,7 @@ namespace Ryujinx.Graphics.GAL
             SupportsShaderBallot = supportsShaderBallot;
             SupportsShaderBarrierDivergence = supportsShaderBarrierDivergence;
             SupportsShaderFloat64 = supportsShaderFloat64;
+            SupportsTextureBufferPixelAlignment = supportsTextureBufferPixelAlignment;
             SupportsTextureShadowLod = supportsTextureShadowLod;
             SupportsViewportIndexVertexTessellation = supportsViewportIndexVertexTessellation;
             SupportsViewportMask = supportsViewportMask;
@@ -146,6 +154,7 @@ namespace Ryujinx.Graphics.GAL
             MaximumComputeSharedMemorySize = maximumComputeSharedMemorySize;
             MaximumSupportedAnisotropy = maximumSupportedAnisotropy;
             StorageBufferOffsetAlignment = storageBufferOffsetAlignment;
+            TextureBufferOffsetAlignment = textureBufferOffsetAlignment;
             GatherBiasPrecision = gatherBiasPrecision;
         }
     }

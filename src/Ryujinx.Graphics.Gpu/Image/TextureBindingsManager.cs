@@ -65,6 +65,9 @@ namespace Ryujinx.Graphics.Gpu.Image
         private bool _scaleChanged;
         private int _lastFragmentTotal;
 
+        private readonly int _bufferTextureAlignment;
+        private readonly int _bufferImageAlignment;
+
         /// <summary>
         /// Constructs a new instance of the texture bindings manager.
         /// </summary>
@@ -103,6 +106,10 @@ namespace Ryujinx.Graphics.Gpu.Image
                 _textureBindings[stage] = new TextureBindingInfo[InitialTextureStateSize];
                 _imageBindings[stage] = new TextureBindingInfo[InitialImageStateSize];
             }
+
+            int alignment = context.Capabilities.TextureBufferOffsetAlignment;
+            _bufferTextureAlignment = context.Capabilities.SupportsTextureBufferPixelAlignment ? 0 : alignment;
+            _bufferImageAlignment = context.Capabilities.SupportsImageBufferPixelAlignment ? 0 : alignment;
         }
 
         /// <summary>
@@ -538,10 +545,12 @@ namespace Ryujinx.Graphics.Gpu.Image
 
                 if (hostTexture != null && texture.Target == Target.TextureBuffer)
                 {
+                    (ulong address, ulong size) = GetAlignedBufferTextureRange(texture, index, stageIndex, false);
+
                     // Ensure that the buffer texture is using the correct buffer as storage.
                     // Buffers are frequently re-created to accommodate larger data, so we need to re-bind
                     // to ensure we're not using a old buffer that was already deleted.
-                    _channel.BufferManager.SetBufferTextureStorage(stage, hostTexture, texture.Range.GetSubRange(0).Address, texture.Size, bindingInfo, bindingInfo.Format, false);
+                    _channel.BufferManager.SetBufferTextureStorage(stage, hostTexture, address, size, bindingInfo, bindingInfo.Format, false);
 
                     // Cache is not used for buffer texture, it must always rebind.
                     state.CachedTexture = null;
@@ -678,7 +687,9 @@ namespace Ryujinx.Graphics.Gpu.Image
                         format = texture.Format;
                     }
 
-                    _channel.BufferManager.SetBufferTextureStorage(stage, hostTexture, texture.Range.GetSubRange(0).Address, texture.Size, bindingInfo, format, true);
+                    (ulong address, ulong size) = GetAlignedBufferTextureRange(texture, index, stageIndex, true);
+
+                    _channel.BufferManager.SetBufferTextureStorage(stage, hostTexture, address, size, bindingInfo, format, true);
 
                     // Cache is not used for buffer texture, it must always rebind.
                     state.CachedTexture = null;
@@ -718,6 +729,42 @@ namespace Ryujinx.Graphics.Gpu.Image
             }
 
             return specStateMatches;
+        }
+
+        /// <summary>
+        /// Gets the aligned address of the texture according to the host requirements.
+        /// </summary>
+        /// <param name="texture">Texture to have its address aligned</param>
+        /// <param name="index">Index of the texture in the shader</param>
+        /// <param name="stageIndex">Index of the shader stage</param>
+        /// <param name="isImage">True if the texture is bound as image, false for sampled textures</param>
+        /// <returns>Aligned address and size of the buffer texture</returns>
+        private (ulong, ulong) GetAlignedBufferTextureRange(Texture texture, int index, int stageIndex, bool isImage)
+        {
+            // TODO: Support multi-range buffer textures.
+            ulong address = texture.Range.GetSubRange(0).Address;
+            ulong size = texture.Size;
+            int alignment = isImage ? _bufferImageAlignment : _bufferTextureAlignment;
+
+            if (alignment != 0)
+            {
+                ulong misalign = (address & ((ulong)alignment - 1));
+                int offset = misalign != 0 ? (int)misalign / texture.Info.FormatInfo.BytesPerPixel : 0;
+
+                address -= misalign;
+                size += misalign;
+
+                if (isImage)
+                {
+                    _context.SupportBufferUpdater.UpdateBufferImageOffset(stageIndex, index, offset);
+                }
+                else
+                {
+                    _context.SupportBufferUpdater.UpdateBufferTextureOffset(stageIndex, index, offset);
+                }
+            }
+
+            return (address, size);
         }
 
         /// <summary>

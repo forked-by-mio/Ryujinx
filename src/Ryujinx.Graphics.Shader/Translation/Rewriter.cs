@@ -17,6 +17,8 @@ namespace Ryujinx.Graphics.Shader.Translation
             bool hasConstantBufferDrawParameters = config.GpuAccessor.QueryHasConstantBufferDrawParameters();
             bool hasVectorIndexingBug = config.GpuAccessor.QueryHostHasVectorIndexingBug();
             bool supportsSnormBufferTextureFormat = config.GpuAccessor.QueryHostSupportsSnormBufferTextureFormat();
+            bool supportsBufferImagePixelAlignment = config.GpuAccessor.QueryHostSupportsBufferImagePixelAlignment();
+            bool supportsBufferTexturePixelAlignment = config.GpuAccessor.QueryHostSupportsBufferTexturePixelAlignment();
 
             for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
             {
@@ -65,10 +67,25 @@ namespace Ryujinx.Graphics.Shader.Translation
                             node = InsertCoordGatherBias(node, config);
                             node = InsertConstOffsets(node, config);
 
-                            if (texOp.Type == SamplerType.TextureBuffer && !supportsSnormBufferTextureFormat)
+                            if (texOp.Type == SamplerType.TextureBuffer)
                             {
-                                node = InsertSnormNormalization(node, config);
+                                if (!supportsSnormBufferTextureFormat)
+                                {
+                                    node = InsertSnormNormalization(node, config);
+                                }
+
+                                if (!supportsBufferTexturePixelAlignment)
+                                {
+                                    node = InsertCoordOffset(node, config, isImage: false);
+                                }
                             }
+                        }
+                        else if (!supportsBufferImagePixelAlignment &&
+                                 (texOp.Inst == Instruction.ImageLoad ||
+                                 texOp.Inst == Instruction.ImageStore ||
+                                 texOp.Inst == Instruction.ImageAtomic))
+                        {
+                            node = InsertCoordOffset(node, config, isImage: true);
                         }
                     }
                     else
@@ -464,12 +481,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 return node;
             }
 
-#pragma warning disable IDE0059 // Remove unnecessary value assignment
-            bool intCoords = (texOp.Flags & TextureFlags.IntCoords) != 0;
-
-            bool isArray = (texOp.Type & SamplerType.Array) != 0;
             bool isIndexed = (texOp.Type & SamplerType.Indexed) != 0;
-#pragma warning restore IDE0059
 
             int coordsCount = texOp.Type.GetDimensions();
             int coordsIndex = isBindless || isIndexed ? 1 : 0;
@@ -519,6 +531,93 @@ namespace Ryujinx.Graphics.Shader.Translation
                 node.List.AddBefore(node, new Operation(Instruction.FP32 | Instruction.Add, coordBiased, source, bias));
 
                 texOp.SetSource(coordsIndex + index, coordBiased);
+            }
+
+            return node;
+        }
+
+        private static LinkedListNode<INode> InsertCoordOffset(LinkedListNode<INode> node, ShaderConfig config, bool isImage)
+        {
+            // Some GPUs have fixed alignment requirements for buffer textures.
+            // For those cases, we bind the aligned buffer offset, and apply the remaining offset on the shader.
+
+            TextureOperation texOp = (TextureOperation)node.Value;
+
+            bool isBindless = (texOp.Flags & TextureFlags.Bindless) != 0;
+            bool isIndexed = (texOp.Type & SamplerType.Indexed) != 0;
+
+            if ((texOp.Type & SamplerType.Mask) != SamplerType.TextureBuffer)
+            {
+                return node;
+            }
+
+            Operand[] sources = new Operand[texOp.SourcesCount];
+
+            for (int i = 0; i < texOp.SourcesCount; i++)
+            {
+                sources[i] = texOp.GetSource(i);
+            }
+
+            int coordsIndex = isBindless || isIndexed ? 1 : 0;
+
+            Operand[] dests = new Operand[texOp.DestsCount];
+
+            for (int i = 0; i < texOp.DestsCount; i++)
+            {
+                dests[i] = texOp.GetDest(i);
+            }
+
+            Operand bindlessHandle = isBindless || isIndexed ? sources[0] : null;
+
+            LinkedListNode<INode> oldNode = node;
+
+            Operand source = sources[coordsIndex];
+            Operand offset = Local();
+            Operand coordPlusOffset = Local();
+
+            int stageIndex = config.Stage switch
+            {
+                ShaderStage.TessellationControl => 1,
+                ShaderStage.TessellationEvaluation => 2,
+                ShaderStage.Geometry => 3,
+                ShaderStage.Fragment => 4,
+                _ => 0,
+            };
+
+            int bindingIndex = isImage
+                ? config.ResourceManager.FindImageDescriptorIndex(texOp.Binding)
+                : config.ResourceManager.FindTextureDescriptorIndex(texOp.Binding);
+
+            node.List.AddBefore(node, new Operation(
+                Instruction.Load,
+                StorageKind.ConstantBuffer,
+                offset,
+                Const(SupportBuffer.Binding),
+                Const((int)SupportBufferField.BufferTextureOffset),
+                Const(stageIndex * SupportBuffer.TextureCount + bindingIndex),
+                Const(isImage ? 1 : 0)));
+
+            node.List.AddBefore(node, new Operation(Instruction.Add, coordPlusOffset, source, offset));
+
+            sources[coordsIndex] = coordPlusOffset;
+
+            TextureOperation newTexOp = new(
+                texOp.Inst,
+                texOp.Type,
+                texOp.Format,
+                texOp.Flags,
+                texOp.Binding,
+                texOp.Index,
+                dests,
+                sources);
+
+            node = node.List.AddBefore(node, newTexOp);
+
+            node.List.Remove(oldNode);
+
+            for (int index = 0; index < texOp.SourcesCount; index++)
+            {
+                texOp.SetSource(index, null);
             }
 
             return node;

@@ -179,6 +179,15 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// Queries dual source blend state.
+        /// </summary>
+        /// <returns>True if blending is enabled with a dual source blend equation, false otherwise</returns>
+        bool QueryDualSourceBlendEnable()
+        {
+            return false;
+        }
+
+        /// <summary>
         /// Queries whenever the current draw has written the base vertex and base instance into Constant Buffer 0.
         /// </summary>
         /// <returns>True if the shader translator can assume that the constant buffer contains the base IDs, false otherwise</returns>
@@ -215,15 +224,6 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
-        /// Queries dual source blend state.
-        /// </summary>
-        /// <returns>True if blending is enabled with a dual source blend equation, false otherwise</returns>
-        bool QueryDualSourceBlendEnable()
-        {
-            return false;
-        }
-
-        /// <summary>
         /// Queries host about the presence of the FrontFacing built-in variable bug.
         /// </summary>
         /// <returns>True if the bug is present on the host device used, false otherwise</returns>
@@ -255,6 +255,24 @@ namespace Ryujinx.Graphics.Shader
         /// </summary>
         /// <returns>True if BGRA formats are supported, false otherwise</returns>
         bool QueryHostSupportsBgraFormat()
+        {
+            return true;
+        }
+
+        /// <summary>
+        /// Queries host support for buffer image access with the buffer offset aligned to a single pixel rather than a fixed alignment.
+        /// </summary>
+        /// <returns>True if the host supports buffer image access with pixel alignment, false otherwise</returns>
+        bool QueryHostSupportsBufferImagePixelAlignment()
+        {
+            return true;
+        }
+
+        /// <summary>
+        /// Queries host support for buffer texture access with the buffer offset aligned to a single pixel rather than a fixed alignment.
+        /// </summary>
+        /// <returns>True if the host supports buffer texture access with pixel alignment, false otherwise</returns>
+        bool QueryHostSupportsBufferTexturePixelAlignment()
         {
             return true;
         }

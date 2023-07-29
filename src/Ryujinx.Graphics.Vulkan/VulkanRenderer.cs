@@ -591,6 +591,7 @@ namespace Ryujinx.Graphics.Vulkan
                 supportsGeometryShader: Capabilities.SupportsGeometryShader,
                 supportsGeometryShaderPassthrough: Capabilities.SupportsGeometryShaderPassthrough,
                 supportsTransformFeedback: Capabilities.SupportsTransformFeedback,
+                supportsImageBufferPixelAlignment: false,
                 supportsImageLoadFormatted: features2.Features.ShaderStorageImageReadWithoutFormat,
                 supportsLayerVertexTessellation: featuresVk12.ShaderOutputLayer,
                 supportsMismatchingViewFormat: true,
@@ -599,6 +600,7 @@ namespace Ryujinx.Graphics.Vulkan
                 supportsShaderBallot: false,
                 supportsShaderBarrierDivergence: Vendor != Vendor.Intel,
                 supportsShaderFloat64: Capabilities.SupportsShaderFloat64,
+                supportsTextureBufferPixelAlignment: false,
                 supportsTextureShadowLod: false,
                 supportsViewportIndexVertexTessellation: featuresVk12.ShaderOutputViewportIndex,
                 supportsViewportMask: Capabilities.SupportsViewportArray2,
@@ -612,6 +614,7 @@ namespace Ryujinx.Graphics.Vulkan
                 maximumComputeSharedMemorySize: (int)limits.MaxComputeSharedMemorySize,
                 maximumSupportedAnisotropy: (int)limits.MaxSamplerAnisotropy,
                 storageBufferOffsetAlignment: (int)limits.MinStorageBufferOffsetAlignment,
+                textureBufferOffsetAlignment: (int)limits.MinTexelBufferOffsetAlignment,
                 gatherBiasPrecision: IsIntelWindows || IsAmdWindows ? (int)Capabilities.SubTexelPrecisionBits : 0);
         }
 

@@ -5,14 +5,17 @@
         public int Opc { get; protected set; }
         public bool Q { get; protected set; }
         public bool F { get; protected set; }
-        public bool U { get; private set; }
+        public bool U { get; }
 
-        public OpCode32Simd(InstDescriptor inst, ulong address, int opCode) : base(inst, address, opCode)
+        public new static OpCode Create(InstDescriptor inst, ulong address, int opCode) => new OpCode32Simd(inst, address, opCode, false);
+        public static OpCode CreateT32(InstDescriptor inst, ulong address, int opCode) => new OpCode32Simd(inst, address, opCode, true);
+
+        public OpCode32Simd(InstDescriptor inst, ulong address, int opCode, bool isThumb) : base(inst, address, opCode, isThumb)
         {
             Size = (opCode >> 20) & 0x3;
             Q = ((opCode >> 6) & 0x1) != 0;
             F = ((opCode >> 10) & 0x1) != 0;
-            U = ((opCode >> 24) & 0x1) != 0;
+            U = ((opCode >> (isThumb ? 28 : 24)) & 0x1) != 0;
             Opc = (opCode >> 7) & 0x3;
 
             RegisterSize = Q ? RegisterSize.Simd128 : RegisterSize.Simd64;

@@ -1,4 +1,6 @@
-﻿using Ryujinx.HLE.HOS.Services.Mii.Types;
+﻿using Ryujinx.Common.Utilities;
+using Ryujinx.Cpu;
+using Ryujinx.HLE.HOS.Services.Mii.Types;
 using Ryujinx.HLE.HOS.Services.Time;
 using Ryujinx.HLE.HOS.Services.Time.Clock;
 using System;
@@ -12,12 +14,12 @@ namespace Ryujinx.HLE.HOS.Services.Mii
         private uint _z;
         private uint _w;
 
-        public UtilityImpl()
+        public UtilityImpl(ITickSource tickSource)
         {
             _x = 123456789;
             _y = 362436069;
 
-            TimeSpanType time = TimeManager.Instance.TickBasedSteadyClock.GetCurrentRawTimePoint(null);
+            TimeSpanType time = TimeManager.Instance.TickBasedSteadyClock.GetCurrentRawTimePoint(tickSource);
 
             _w = (uint)(time.NanoSeconds & uint.MaxValue);
             _z = (uint)((time.NanoSeconds >> 32) & uint.MaxValue);
@@ -61,7 +63,13 @@ namespace Ryujinx.HLE.HOS.Services.Mii
 
         public CreateId MakeCreateId()
         {
-            return new CreateId(Guid.NewGuid().ToByteArray());
+            UInt128 value = UInt128Utils.CreateRandom();
+
+            // Ensure the random ID generated is valid as a create id.
+            value &= ~new UInt128(0xC0, 0);
+            value |= new UInt128(0x80, 0);
+
+            return new CreateId(value);
         }
     }
 }

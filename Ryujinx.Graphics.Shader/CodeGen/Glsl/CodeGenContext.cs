@@ -1,5 +1,5 @@
+using Ryujinx.Graphics.Shader.StructuredIr;
 using Ryujinx.Graphics.Shader.Translation;
-using System.Collections.Generic;
 using System.Text;
 
 namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
@@ -8,29 +8,24 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
     {
         public const string Tab = "    ";
 
-        public ShaderConfig Config { get; }
+        public StructuredFunction CurrentFunction { get; set; }
 
-        public List<BufferDescriptor>  CBufferDescriptors { get; }
-        public List<BufferDescriptor>  SBufferDescriptors { get; }
-        public List<TextureDescriptor> TextureDescriptors { get; }
-        public List<TextureDescriptor> ImageDescriptors   { get; }
+        public StructuredProgramInfo Info { get; }
+
+        public ShaderConfig Config { get; }
 
         public OperandManager OperandManager { get; }
 
-        private StringBuilder _sb;
+        private readonly StringBuilder _sb;
 
         private int _level;
 
         private string _indentation;
 
-        public CodeGenContext(ShaderConfig config)
+        public CodeGenContext(StructuredProgramInfo info, ShaderConfig config)
         {
+            Info = info;
             Config = config;
-
-            CBufferDescriptors = new List<BufferDescriptor>();
-            SBufferDescriptors = new List<BufferDescriptor>();
-            TextureDescriptors = new List<TextureDescriptor>();
-            ImageDescriptors   = new List<TextureDescriptor>();
 
             OperandManager = new OperandManager();
 
@@ -73,6 +68,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
             UpdateIndentation();
 
             AppendLine("}" + suffix);
+        }
+
+        public StructuredFunction GetFunction(int id)
+        {
+            return Info.Functions[id];
         }
 
         private void UpdateIndentation()

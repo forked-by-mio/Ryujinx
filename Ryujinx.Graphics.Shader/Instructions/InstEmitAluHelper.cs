@@ -10,50 +10,87 @@ namespace Ryujinx.Graphics.Shader.Instructions
 {
     static class InstEmitAluHelper
     {
-        public static long GetIntMin(IntegerType type)
+        public static long GetIntMin(IDstFmt type)
         {
-            switch (type)
+            return type switch
             {
-                case IntegerType.U8:  return byte.MinValue;
-                case IntegerType.S8:  return sbyte.MinValue;
-                case IntegerType.U16: return ushort.MinValue;
-                case IntegerType.S16: return short.MinValue;
-                case IntegerType.U32: return uint.MinValue;
-                case IntegerType.S32: return int.MinValue;
-            }
-
-            throw new ArgumentException($"The type \"{type}\" is not a supported int type.");
+                IDstFmt.U16 => ushort.MinValue,
+                IDstFmt.S16 => short.MinValue,
+                IDstFmt.U32 => uint.MinValue,
+                IDstFmt.S32 => int.MinValue,
+                _ => throw new ArgumentException($"The type \"{type}\" is not a supported integer type.")
+            };
         }
 
-        public static long GetIntMax(IntegerType type)
+        public static long GetIntMax(IDstFmt type)
         {
-            switch (type)
+            return type switch
             {
-                case IntegerType.U8:  return byte.MaxValue;
-                case IntegerType.S8:  return sbyte.MaxValue;
-                case IntegerType.U16: return ushort.MaxValue;
-                case IntegerType.S16: return short.MaxValue;
-                case IntegerType.U32: return uint.MaxValue;
-                case IntegerType.S32: return int.MaxValue;
-            }
-
-            throw new ArgumentException($"The type \"{type}\" is not a supported int type.");
+                IDstFmt.U16 => ushort.MaxValue,
+                IDstFmt.S16 => short.MaxValue,
+                IDstFmt.U32 => uint.MaxValue,
+                IDstFmt.S32 => int.MaxValue,
+                _ => throw new ArgumentException($"The type \"{type}\" is not a supported integer type.")
+            };
         }
 
-        public static Operand GetPredLogicalOp(
-            EmitterContext   context,
-            LogicalOperation logicalOp,
-            Operand          input,
-            Operand          pred)
+        public static long GetIntMin(ISrcDstFmt type)
         {
-            switch (logicalOp)
+            return type switch
             {
-                case LogicalOperation.And:         return context.BitwiseAnd        (input, pred);
-                case LogicalOperation.Or:          return context.BitwiseOr         (input, pred);
-                case LogicalOperation.ExclusiveOr: return context.BitwiseExclusiveOr(input, pred);
-            }
+                ISrcDstFmt.U8 => byte.MinValue,
+                ISrcDstFmt.S8 => sbyte.MinValue,
+                ISrcDstFmt.U16 => ushort.MinValue,
+                ISrcDstFmt.S16 => short.MinValue,
+                ISrcDstFmt.U32 => uint.MinValue,
+                ISrcDstFmt.S32 => int.MinValue,
+                _ => throw new ArgumentException($"The type \"{type}\" is not a supported integer type.")
+            };
+        }
 
-            return input;
+        public static long GetIntMax(ISrcDstFmt type)
+        {
+            return type switch
+            {
+                ISrcDstFmt.U8 => byte.MaxValue,
+                ISrcDstFmt.S8 => sbyte.MaxValue,
+                ISrcDstFmt.U16 => ushort.MaxValue,
+                ISrcDstFmt.S16 => short.MaxValue,
+                ISrcDstFmt.U32 => uint.MaxValue,
+                ISrcDstFmt.S32 => int.MaxValue,
+                _ => throw new ArgumentException($"The type \"{type}\" is not a supported integer type.")
+            };
+        }
+
+        public static Operand GetPredLogicalOp(EmitterContext context, BoolOp logicOp, Operand input, Operand pred)
+        {
+            return logicOp switch
+            {
+                BoolOp.And => context.BitwiseAnd(input, pred),
+                BoolOp.Or => context.BitwiseOr(input, pred),
+                BoolOp.Xor => context.BitwiseExclusiveOr(input, pred),
+                _ => input
+            };
+        }
+
+        public static Operand Extend(EmitterContext context, Operand src, VectorSelect type)
+        {
+            return type switch
+            {
+                VectorSelect.U8B0 => ZeroExtendTo32(context, context.ShiftRightU32(src, Const(0)), 8),
+                VectorSelect.U8B1 => ZeroExtendTo32(context, context.ShiftRightU32(src, Const(8)), 8),
+                VectorSelect.U8B2 => ZeroExtendTo32(context, context.ShiftRightU32(src, Const(16)), 8),
+                VectorSelect.U8B3 => ZeroExtendTo32(context, context.ShiftRightU32(src, Const(24)), 8),
+                VectorSelect.U16H0 => ZeroExtendTo32(context, context.ShiftRightU32(src, Const(0)), 16),
+                VectorSelect.U16H1 => ZeroExtendTo32(context, context.ShiftRightU32(src, Const(16)), 16),
+                VectorSelect.S8B0 => SignExtendTo32(context, context.ShiftRightU32(src, Const(0)), 8),
+                VectorSelect.S8B1 => SignExtendTo32(context, context.ShiftRightU32(src, Const(8)), 8),
+                VectorSelect.S8B2 => SignExtendTo32(context, context.ShiftRightU32(src, Const(16)), 8),
+                VectorSelect.S8B3 => SignExtendTo32(context, context.ShiftRightU32(src, Const(24)), 8),
+                VectorSelect.S16H0 => SignExtendTo32(context, context.ShiftRightU32(src, Const(0)), 16),
+                VectorSelect.S16H1 => SignExtendTo32(context, context.ShiftRightU32(src, Const(16)), 16),
+                _ => src
+            };
         }
 
         public static void SetZnFlags(EmitterContext context, Operand dest, bool setCC, bool extended = false)
@@ -99,6 +136,25 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 context.Copy(GetZF(), context.FPCompareEqual(dest, zero, fpType));
                 context.Copy(GetNF(), context.FPCompareLess (dest, zero, fpType));
             }
+        }
+
+        public static (Operand, Operand) NegateLong(EmitterContext context, Operand low, Operand high)
+        {
+            low = context.BitwiseNot(low);
+            high = context.BitwiseNot(high);
+            low = AddWithCarry(context, low, Const(1), out Operand carryOut);
+            high = context.IAdd(high, carryOut);
+            return (low, high);
+        }
+
+        public static Operand AddWithCarry(EmitterContext context, Operand lhs, Operand rhs, out Operand carryOut)
+        {
+            Operand result = context.IAdd(lhs, rhs);
+
+            // C = Rd < Rn
+            carryOut = context.INegate(context.ICompareLessUnsigned(result, lhs));
+
+            return result;
         }
     }
 }

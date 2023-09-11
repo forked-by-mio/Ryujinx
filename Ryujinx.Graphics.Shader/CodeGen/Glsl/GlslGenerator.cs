@@ -10,59 +10,67 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
 {
     static class GlslGenerator
     {
-        public static GlslProgram Generate(StructuredProgramInfo info, ShaderConfig config)
+        private const string MainFunctionName = "main";
+
+        public static string Generate(StructuredProgramInfo info, ShaderConfig config)
         {
-            CodeGenContext context = new CodeGenContext(config);
+            CodeGenContext context = new CodeGenContext(info, config);
 
             Declarations.Declare(context, info);
 
-            PrintMainBlock(context, info);
-
-            return new GlslProgram(
-                context.CBufferDescriptors.ToArray(),
-                context.SBufferDescriptors.ToArray(),
-                context.TextureDescriptors.ToArray(),
-                context.ImageDescriptors.ToArray(),
-                context.GetCode());
-        }
-
-        private static void PrintMainBlock(CodeGenContext context, StructuredProgramInfo info)
-        {
-            context.AppendLine("void main()");
-
-            context.EnterScope();
-
-            Declarations.DeclareLocals(context, info);
-
-            // Some games will leave some elements of gl_Position uninitialized,
-            // in those cases, the elements will contain undefined values according
-            // to the spec, but on NVIDIA they seems to be always initialized to (0, 0, 0, 1),
-            // so we do explicit initialization to avoid UB on non-NVIDIA gpus.
-            if (context.Config.Stage == ShaderStage.Vertex)
+            if (info.Functions.Count != 0)
             {
-                context.AppendLine("gl_Position = vec4(0.0, 0.0, 0.0, 1.0);");
-            }
-
-            // Ensure that unused attributes are set, otherwise the downstream
-            // compiler may eliminate them.
-            // (Not needed for fragment shader as it is the last stage).
-            if (context.Config.Stage != ShaderStage.Compute &&
-                context.Config.Stage != ShaderStage.Fragment)
-            {
-                for (int attr = 0; attr < Declarations.MaxAttributes; attr++)
+                for (int i = 1; i < info.Functions.Count; i++)
                 {
-                    if (info.OAttributes.Contains(attr))
-                    {
-                        continue;
-                    }
+                    context.AppendLine($"{GetFunctionSignature(info.Functions[i])};");
+                }
 
-                    context.AppendLine($"{DefaultNames.OAttributePrefix}{attr} = vec4(0);");
+                context.AppendLine();
+
+                for (int i = 1; i < info.Functions.Count; i++)
+                {
+                    PrintFunction(context, info, info.Functions[i]);
+
+                    context.AppendLine();
                 }
             }
 
-            PrintBlock(context, info.MainBlock);
+            PrintFunction(context, info, info.Functions[0], MainFunctionName);
+
+            return context.GetCode();
+        }
+
+        private static void PrintFunction(CodeGenContext context, StructuredProgramInfo info, StructuredFunction function, string funcName = null)
+        {
+            context.CurrentFunction = function;
+
+            context.AppendLine(GetFunctionSignature(function, funcName));
+            context.EnterScope();
+
+            Declarations.DeclareLocals(context, function);
+
+            PrintBlock(context, function.MainBlock);
 
             context.LeaveScope();
+        }
+
+        private static string GetFunctionSignature(StructuredFunction function, string funcName = null)
+        {
+            string[] args = new string[function.InArguments.Length + function.OutArguments.Length];
+
+            for (int i = 0; i < function.InArguments.Length; i++)
+            {
+                args[i] = $"{Declarations.GetVarTypeName(function.InArguments[i])} {OperandManager.GetArgumentName(i)}";
+            }
+
+            for (int i = 0; i < function.OutArguments.Length; i++)
+            {
+                int j = i + function.InArguments.Length;
+
+                args[j] = $"out {Declarations.GetVarTypeName(function.OutArguments[i])} {OperandManager.GetArgumentName(j)}";
+            }
+
+            return $"{Declarations.GetVarTypeName(function.ReturnType)} {funcName ?? function.Name}({string.Join(", ", args)})";
         }
 
         private static void PrintBlock(CodeGenContext context, AstBlock block)
@@ -109,18 +117,24 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
             {
                 if (node is AstOperation operation)
                 {
-                    context.AppendLine(InstGen.GetExpression(context, operation) + ";");
+                    string expr = InstGen.GetExpression(context, operation);
+
+                    if (expr != null)
+                    {
+                        context.AppendLine(expr + ";");
+                    }
                 }
                 else if (node is AstAssignment assignment)
                 {
-                    VariableType srcType = OperandManager.GetNodeDestType(assignment.Source);
-                    VariableType dstType = OperandManager.GetNodeDestType(assignment.Destination);
+                    VariableType srcType = OperandManager.GetNodeDestType(context, assignment.Source);
+                    VariableType dstType = OperandManager.GetNodeDestType(context, assignment.Destination, isAsgDest: true);
 
                     string dest;
 
-                    if (assignment.Destination is AstOperand operand && operand.Type == OperandType.Attribute)
+                    if (assignment.Destination is AstOperand operand && operand.Type.IsAttribute())
                     {
-                        dest = OperandManager.GetOutAttributeName(operand, context.Config.Stage);
+                        bool perPatch = operand.Type == OperandType.AttributePerPatch;
+                        dest = OperandManager.GetOutAttributeName(context, operand.Value, perPatch);
                     }
                     else
                     {
@@ -144,7 +158,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
 
         private static string GetCondExpr(CodeGenContext context, IAstNode cond)
         {
-            VariableType srcType = OperandManager.GetNodeDestType(cond);
+            VariableType srcType = OperandManager.GetNodeDestType(context, cond);
 
             return ReinterpretCast(context, cond, srcType, VariableType.Bool);
         }

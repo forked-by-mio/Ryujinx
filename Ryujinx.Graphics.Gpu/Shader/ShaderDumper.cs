@@ -1,5 +1,3 @@
-using Ryujinx.Graphics.Shader.Translation;
-using System;
 using System.IO;
 
 namespace Ryujinx.Graphics.Gpu.Shader
@@ -11,13 +9,19 @@ namespace Ryujinx.Graphics.Gpu.Shader
     {
         private string _runtimeDir;
         private string _dumpPath;
-        private int    _dumpIndex;
 
-        public int CurrentDumpIndex => _dumpIndex;
+        /// <summary>
+        /// Current index of the shader dump binary file.
+        /// This is incremented after each save, in order to give unique names to the files.
+        /// </summary>
+        public int CurrentDumpIndex { get; private set; }
 
+        /// <summary>
+        /// Creates a new instance of the shader dumper.
+        /// </summary>
         public ShaderDumper()
         {
-            _dumpIndex = 1;
+            CurrentDumpIndex = 1;
         }
 
         /// <summary>
@@ -25,53 +29,47 @@ namespace Ryujinx.Graphics.Gpu.Shader
         /// </summary>
         /// <param name="code">Code to be dumped</param>
         /// <param name="compute">True for compute shader code, false for graphics shader code</param>
-        /// <param name="fullPath">Output path for the shader code with header included</param>
-        /// <param name="codePath">Output path for the shader code without header</param>
-        public void Dump(ReadOnlySpan<byte> code, bool compute, out string fullPath, out string codePath)
+        /// <returns>Paths where the shader code was dumped</returns>
+        public ShaderDumpPaths Dump(byte[] code, bool compute)
         {
             _dumpPath = GraphicsConfig.ShadersDumpPath;
 
             if (string.IsNullOrWhiteSpace(_dumpPath))
             {
-                fullPath = null;
-                codePath = null;
-
-                return;
+                return default;
             }
 
-            string fileName = "Shader" + _dumpIndex.ToString("d4") + ".bin";
+            string fileName = "Shader" + CurrentDumpIndex.ToString("d4") + ".bin";
 
-            fullPath = Path.Combine(FullDir(), fileName);
-            codePath = Path.Combine(CodeDir(), fileName);
+            string fullPath = Path.Combine(FullDir(), fileName);
+            string codePath = Path.Combine(CodeDir(), fileName);
 
-            _dumpIndex++;
+            CurrentDumpIndex++;
 
-            code = Translator.ExtractCode(code, compute, out int headerSize);
+            using MemoryStream stream = new MemoryStream(code);
+            BinaryReader codeReader = new BinaryReader(stream);
 
-            using (MemoryStream stream = new MemoryStream(code.ToArray()))
+            using FileStream fullFile = File.Create(fullPath);
+            using FileStream codeFile = File.Create(codePath);
+            BinaryWriter fullWriter = new BinaryWriter(fullFile);
+            BinaryWriter codeWriter = new BinaryWriter(codeFile);
+
+            int headerSize = compute ? 0 : 0x50;
+
+            fullWriter.Write(codeReader.ReadBytes(headerSize));
+
+            byte[] temp = codeReader.ReadBytes(code.Length - headerSize);
+
+            fullWriter.Write(temp);
+            codeWriter.Write(temp);
+
+            // Align to meet nvdisasm requirements.
+            while (codeFile.Length % 0x20 != 0)
             {
-                BinaryReader codeReader = new BinaryReader(stream);
-
-                using (FileStream fullFile = File.Create(fullPath))
-                using (FileStream codeFile = File.Create(codePath))
-                {
-                    BinaryWriter fullWriter = new BinaryWriter(fullFile);
-                    BinaryWriter codeWriter = new BinaryWriter(codeFile);
-
-                    fullWriter.Write(codeReader.ReadBytes(headerSize));
-
-                    byte[] temp = codeReader.ReadBytes(code.Length - headerSize);
-
-                    fullWriter.Write(temp);
-                    codeWriter.Write(temp);
-
-                    // Align to meet nvdisasm requirements.
-                    while (codeFile.Length % 0x20 != 0)
-                    {
-                        codeWriter.Write(0);
-                    }
-                }
+                codeWriter.Write(0);
             }
+
+            return new ShaderDumpPaths(fullPath, codePath);
         }
 
         /// <summary>

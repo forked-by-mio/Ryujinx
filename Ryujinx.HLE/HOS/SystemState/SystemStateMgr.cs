@@ -1,12 +1,9 @@
-using Ryujinx.HLE.HOS.Services.Account.Acc;
 using System;
 
 namespace Ryujinx.HLE.HOS.SystemState
 {
     public class SystemStateMgr
     {
-        public static readonly UserId DefaultUserId = new UserId("00000000000000010000000000000000");
-
         internal static string[] LanguageCodes = new string[]
         {
             "ja",
@@ -25,15 +22,13 @@ namespace Ryujinx.HLE.HOS.SystemState
             "fr-CA",
             "es-419",
             "zh-Hans",
-            "zh-Hant"
+            "zh-Hant",
+            "pt-BR"
         };
 
-        internal static string[] AudioOutputs = new string[]
-        {
-            "AudioTvOutput",
-            "AudioStereoJackOutput",
-            "AudioBuiltInSpeakerOutput"
-        };
+        internal long DesiredKeyboardLayout { get; private set; }
+
+        internal SystemLanguage DesiredSystemLanguage { get; private set; }
 
         internal long DesiredLanguageCode { get; private set; }
 
@@ -41,64 +36,37 @@ namespace Ryujinx.HLE.HOS.SystemState
 
         public TitleLanguage DesiredTitleLanguage { get; private set; }
 
-        internal string ActiveAudioOutput { get; private set; }
-
         public bool DockedMode { get; set; }
 
         public ColorSet ThemeColor { get; set; }
 
-        public bool InstallContents { get; set; }
-
-        public AccountUtils Account { get; private set; }
+        public string DeviceNickName { get; set; }
 
         public SystemStateMgr()
         {
-            SetAudioOutputAsBuiltInSpeaker();
-
-            Account = new AccountUtils();
-
-            Account.AddUser(DefaultUserId, "Player");
-            Account.OpenUser(DefaultUserId);
+            // TODO: Let user specify fields.
+            DesiredKeyboardLayout = (long)KeyboardLayout.Default;
+            DeviceNickName        = "Ryujinx's Switch";
         }
 
         public void SetLanguage(SystemLanguage language)
         {
-            DesiredLanguageCode = GetLanguageCode((int)language);
+            DesiredSystemLanguage = language;
+            DesiredLanguageCode   = GetLanguageCode((int)DesiredSystemLanguage);
 
-            switch (language)
+            DesiredTitleLanguage = language switch
             {
-                case SystemLanguage.Taiwanese:
-                case SystemLanguage.TraditionalChinese:
-                    DesiredTitleLanguage = TitleLanguage.Taiwanese;
-                    break;
-                case SystemLanguage.Chinese:
-                case SystemLanguage.SimplifiedChinese:
-                    DesiredTitleLanguage = TitleLanguage.Chinese;
-                    break;
-                default:
-                    DesiredTitleLanguage = Enum.Parse<TitleLanguage>(Enum.GetName(typeof(SystemLanguage), language));
-                    break;
-            }
+                SystemLanguage.Taiwanese or
+                SystemLanguage.TraditionalChinese => TitleLanguage.Taiwanese,
+                SystemLanguage.Chinese or
+                SystemLanguage.SimplifiedChinese  => TitleLanguage.Chinese,
+                _                                 => Enum.Parse<TitleLanguage>(Enum.GetName<SystemLanguage>(language)),
+            };
         }
 
-        public void SetRegion(SystemRegion region)
+        public void SetRegion(RegionCode region)
         {
             DesiredRegionCode = (uint)region;
-        }
-
-        public void SetAudioOutputAsTv()
-        {
-            ActiveAudioOutput = AudioOutputs[0];
-        }
-
-        public void SetAudioOutputAsStereoJack()
-        {
-            ActiveAudioOutput = AudioOutputs[1];
-        }
-
-        public void SetAudioOutputAsBuiltInSpeaker()
-        {
-            ActiveAudioOutput = AudioOutputs[2];
         }
 
         internal static long GetLanguageCode(int index)

@@ -112,9 +112,9 @@ namespace Ryujinx.Common
 
         public static Stream GetStream(string filename)
         {
-            var (assembly, _) = ResolveManifestPath(filename);
+            var (assembly, path) = ResolveManifestPath(filename);
 
-            return GetStream(assembly, filename);
+            return GetStream(assembly, path);
         }
 
         public static Stream GetStream(Assembly assembly, string filename)
@@ -129,7 +129,7 @@ namespace Ryujinx.Common
 
         private static (Assembly, string) ResolveManifestPath(string filename)
         {
-            var segments = filename.Split(new[] { '/' }, 2, StringSplitOptions.RemoveEmptyEntries);
+            var segments = filename.Split('/', 2, StringSplitOptions.RemoveEmptyEntries);
 
             if (segments.Length >= 2)
             {

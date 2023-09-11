@@ -1,3 +1,4 @@
+using Ryujinx.Graphics.Shader.Translation;
 using System;
 
 namespace Ryujinx.Graphics.Shader
@@ -5,19 +6,25 @@ namespace Ryujinx.Graphics.Shader
     public class ShaderProgram
     {
         public ShaderProgramInfo Info { get; }
-
-        public ShaderStage Stage { get; }
+        public TargetLanguage Language { get; }
 
         public string Code { get; private set; }
+        public byte[] BinaryCode { get; }
 
-        public int Size { get; }
-
-        internal ShaderProgram(ShaderProgramInfo info, ShaderStage stage, string code, int size)
+        private ShaderProgram(ShaderProgramInfo info, TargetLanguage language)
         {
-            Info  = info;
-            Stage = stage;
-            Code  = code;
-            Size  = size;
+            Info = info;
+            Language = language;
+        }
+
+        public ShaderProgram(ShaderProgramInfo info, TargetLanguage language, string code) : this(info, language)
+        {
+            Code = code;
+        }
+
+        public ShaderProgram(ShaderProgramInfo info, TargetLanguage language, byte[] binaryCode) : this(info, language)
+        {
+            BinaryCode = binaryCode;
         }
 
         public void Prepend(string line)

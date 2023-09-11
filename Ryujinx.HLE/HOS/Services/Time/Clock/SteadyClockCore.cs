@@ -1,5 +1,5 @@
-﻿using Ryujinx.HLE.HOS.Kernel.Threading;
-using Ryujinx.HLE.Utilities;
+﻿using Ryujinx.Common.Utilities;
+using Ryujinx.Cpu;
 using System;
 
 namespace Ryujinx.HLE.HOS.Services.Time.Clock
@@ -12,7 +12,7 @@ namespace Ryujinx.HLE.HOS.Services.Time.Clock
 
         public SteadyClockCore()
         {
-            _clockSourceId      = new UInt128(Guid.NewGuid().ToByteArray());
+            _clockSourceId      = UInt128Utils.CreateRandom();
             _isRtcResetDetected = false;
             _isInitialized      = false;
         }
@@ -63,21 +63,21 @@ namespace Ryujinx.HLE.HOS.Services.Time.Clock
 
         public virtual void SetInternalOffset(TimeSpanType internalOffset) {}
 
-        public virtual SteadyClockTimePoint GetTimePoint(KThread thread)
+        public virtual SteadyClockTimePoint GetTimePoint(ITickSource tickSource)
         {
             throw new NotImplementedException();
         }
 
-        public virtual TimeSpanType GetCurrentRawTimePoint(KThread thread)
+        public virtual TimeSpanType GetCurrentRawTimePoint(ITickSource tickSource)
         {
-            SteadyClockTimePoint timePoint = GetTimePoint(thread);
+            SteadyClockTimePoint timePoint = GetTimePoint(tickSource);
 
             return TimeSpanType.FromSeconds(timePoint.TimePoint);
         }
 
-        public SteadyClockTimePoint GetCurrentTimePoint(KThread thread)
+        public SteadyClockTimePoint GetCurrentTimePoint(ITickSource tickSource)
         {
-            SteadyClockTimePoint result = GetTimePoint(thread);
+            SteadyClockTimePoint result = GetTimePoint(tickSource);
 
             result.TimePoint += GetTestOffset().ToSeconds();
             result.TimePoint += GetInternalOffset().ToSeconds();

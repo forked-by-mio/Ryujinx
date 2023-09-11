@@ -2,39 +2,80 @@ using System.Collections.Generic;
 
 namespace Ryujinx.Graphics.Shader.StructuredIr
 {
+    readonly struct TransformFeedbackOutput
+    {
+        public readonly bool Valid;
+        public readonly int Buffer;
+        public readonly int Offset;
+        public readonly int Stride;
+
+        public TransformFeedbackOutput(int buffer, int offset, int stride)
+        {
+            Valid = true;
+            Buffer = buffer;
+            Offset = offset;
+            Stride = stride;
+        }
+    }
+
     class StructuredProgramInfo
     {
-        public AstBlock MainBlock { get; }
+        public List<StructuredFunction> Functions { get; }
 
-        public HashSet<AstOperand> Locals { get; }
-
-        public HashSet<int> CBuffers { get; }
-        public HashSet<int> SBuffers { get; }
-
-        public HashSet<int> IAttributes { get; }
-        public HashSet<int> OAttributes { get; }
-
-        public bool UsesInstanceId { get; set; }
+        public HashSet<int> Inputs { get; }
+        public HashSet<int> Outputs { get; }
+        public HashSet<int> InputsPerPatch { get; }
+        public HashSet<int> OutputsPerPatch { get; }
 
         public HelperFunctionsMask HelperFunctionsMask { get; set; }
 
-        public HashSet<AstTextureOperation> Samplers { get; }
-        public HashSet<AstTextureOperation> Images   { get; }
+        public TransformFeedbackOutput[] TransformFeedbackOutputs { get; }
 
-        public StructuredProgramInfo(AstBlock mainBlock)
+        public StructuredProgramInfo()
         {
-            MainBlock = mainBlock;
+            Functions = new List<StructuredFunction>();
 
-            Locals = new HashSet<AstOperand>();
+            Inputs = new HashSet<int>();
+            Outputs = new HashSet<int>();
+            InputsPerPatch = new HashSet<int>();
+            OutputsPerPatch = new HashSet<int>();
 
-            CBuffers = new HashSet<int>();
-            SBuffers = new HashSet<int>();
+            TransformFeedbackOutputs = new TransformFeedbackOutput[0xc0];
+        }
 
-            IAttributes = new HashSet<int>();
-            OAttributes = new HashSet<int>();
+        public TransformFeedbackOutput GetTransformFeedbackOutput(int attr)
+        {
+            int index = attr / 4;
+            return TransformFeedbackOutputs[index];
+        }
 
-            Samplers = new HashSet<AstTextureOperation>();
-            Images   = new HashSet<AstTextureOperation>();
+        public int GetTransformFeedbackOutputComponents(int attr)
+        {
+            int index = attr / 4;
+            int baseIndex = index & ~3;
+
+            int count = 1;
+
+            for (; count < 4; count++)
+            {
+                ref var prev = ref TransformFeedbackOutputs[baseIndex + count - 1];
+                ref var curr = ref TransformFeedbackOutputs[baseIndex + count];
+
+                int prevOffset = prev.Offset;
+                int currOffset = curr.Offset;
+
+                if (!prev.Valid || !curr.Valid || prevOffset + 4 != currOffset)
+                {
+                    break;
+                }
+            }
+
+            if (baseIndex + count <= index)
+            {
+                return 1;
+            }
+
+            return count;
         }
     }
 }

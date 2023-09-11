@@ -2,18 +2,23 @@
 {
     class OpCode32SimdMemMult : OpCode32
     {
-        public int Rn { get; private set; }
-        public int Vd { get; private set; }
+        public int Rn { get; }
+        public int Vd { get; }
 
-        public int RegisterRange { get; private set; }
-        public int Offset { get; private set; }
-        public int PostOffset { get; private set; }
-        public bool IsLoad { get; private set; }
-        public bool DoubleWidth { get; private set; }
-        public bool Add { get; private set; }
+        public int RegisterRange { get; }
+        public int Offset { get; }
+        public int PostOffset { get; }
+        public bool IsLoad { get; }
+        public bool DoubleWidth { get; }
+        public bool Add { get; }
 
-        public OpCode32SimdMemMult(InstDescriptor inst, ulong address, int opCode) : base(inst, address, opCode)
+        public new static OpCode Create(InstDescriptor inst, ulong address, int opCode) => new OpCode32SimdMemMult(inst, address, opCode, false);
+        public static OpCode CreateT32(InstDescriptor inst, ulong address, int opCode) => new OpCode32SimdMemMult(inst, address, opCode, true);
+
+        public OpCode32SimdMemMult(InstDescriptor inst, ulong address, int opCode, bool isThumb) : base(inst, address, opCode)
         {
+            IsThumb = isThumb;
+
             Rn = (opCode >> 16) & 0xf;
 
             bool isLoad = (opCode & (1 << 20)) != 0;

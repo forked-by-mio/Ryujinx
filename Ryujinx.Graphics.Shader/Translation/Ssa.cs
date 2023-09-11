@@ -63,7 +63,52 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
         }
 
-        private struct Definition
+        private class LocalDefMap
+        {
+            private Operand[] _map;
+            private int[] _uses;
+            public int UseCount { get; private set; }
+
+            public LocalDefMap()
+            {
+                _map = new Operand[RegisterConsts.TotalCount];
+                _uses = new int[RegisterConsts.TotalCount];
+            }
+
+            public Operand Get(int key)
+            {
+                return _map[key];
+            }
+
+            public void Add(int key, Operand operand)
+            {
+                if (_map[key] == null)
+                {
+                    _uses[UseCount++] = key;
+                }
+
+                _map[key] = operand;
+            }
+
+            public Operand GetUse(int index, out int key)
+            {
+                key = _uses[index];
+
+                return _map[key];
+            }
+
+            public void Clear()
+            {
+                for (int i = 0; i < UseCount; i++)
+                {
+                    _map[_uses[i]] = null;
+                }
+
+                UseCount = 0;
+            }
+        }
+
+        private readonly struct Definition
         {
             public BasicBlock Block { get; }
             public Operand    Local { get; }
@@ -78,6 +123,7 @@ namespace Ryujinx.Graphics.Shader.Translation
         public static void Rename(BasicBlock[] blocks)
         {
             DefMap[] globalDefs = new DefMap[blocks.Length];
+            LocalDefMap localDefs = new LocalDefMap();
 
             for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
             {
@@ -89,13 +135,11 @@ namespace Ryujinx.Graphics.Shader.Translation
             // First pass, get all defs and locals uses.
             for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
             {
-                Operand[] localDefs = new Operand[RegisterConsts.TotalCount];
-
                 Operand RenameLocal(Operand operand)
                 {
                     if (operand != null && operand.Type == OperandType.Register)
                     {
-                        Operand local = localDefs[GetKeyFromRegister(operand.GetRegister())];
+                        Operand local = localDefs.Get(GetKeyFromRegister(operand.GetRegister()));
 
                         operand = local ?? operand;
                     }
@@ -116,29 +160,30 @@ namespace Ryujinx.Graphics.Shader.Translation
                             operation.SetSource(index, RenameLocal(operation.GetSource(index)));
                         }
 
-                        if (operation.Dest != null && operation.Dest.Type == OperandType.Register)
+                        for (int index = 0; index < operation.DestsCount; index++)
                         {
-                            Operand local = Local();
+                            Operand dest = operation.GetDest(index);
 
-                            localDefs[GetKeyFromRegister(operation.Dest.GetRegister())] = local;
+                            if (dest != null && dest.Type == OperandType.Register)
+                            {
+                                Operand local = Local();
 
-                            operation.Dest = local;
+                                localDefs.Add(GetKeyFromRegister(dest.GetRegister()), local);
+
+                                operation.SetDest(index, local);
+                            }
                         }
                     }
 
                     node = node.Next;
                 }
 
-                for (int index = 0; index < RegisterConsts.TotalCount; index++)
+                int localUses = localDefs.UseCount;
+                for (int index = 0; index < localUses; index++)
                 {
-                    Operand local = localDefs[index];
+                    Operand local = localDefs.GetUse(index, out int key);
 
-                    if (local == null)
-                    {
-                        continue;
-                    }
-
-                    Register reg = GetRegisterFromKey(index);
+                    Register reg = GetRegisterFromKey(key);
 
                     globalDefs[block.Index].TryAddOperand(reg, local);
 
@@ -155,13 +200,13 @@ namespace Ryujinx.Graphics.Shader.Translation
                         }
                     }
                 }
+
+                localDefs.Clear();
             }
 
             // Second pass, rename variables with definitions on different blocks.
             for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
             {
-                Operand[] localDefs = new Operand[RegisterConsts.TotalCount];
-
                 BasicBlock block = blocks[blkIndex];
 
                 Operand RenameGlobal(Operand operand)
@@ -170,7 +215,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                     {
                         int key = GetKeyFromRegister(operand.GetRegister());
 
-                        Operand local = localDefs[key];
+                        Operand local = localDefs.Get(key);
 
                         if (local != null)
                         {
@@ -179,15 +224,13 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                         operand = FindDefinitionForCurr(globalDefs, block, operand.GetRegister());
 
-                        localDefs[key] = operand;
+                        localDefs.Add(key, operand);
                     }
 
                     return operand;
                 }
 
-                LinkedListNode<INode> node = block.Operations.First;
-
-                while (node != null)
+                for (LinkedListNode<INode> node = block.Operations.First; node != null; node = node.Next)
                 {
                     if (node.Value is Operation operation)
                     {
@@ -196,8 +239,11 @@ namespace Ryujinx.Graphics.Shader.Translation
                             operation.SetSource(index, RenameGlobal(operation.GetSource(index)));
                         }
                     }
+                }
 
-                    node = node.Next;
+                if (blkIndex < blocks.Length - 1)
+                {
+                    localDefs.Clear();
                 }
             }
         }

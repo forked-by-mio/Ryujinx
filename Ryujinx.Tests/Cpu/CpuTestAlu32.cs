@@ -1,7 +1,6 @@
 ﻿#define Alu32
 
 using NUnit.Framework;
-using System;
 
 namespace Ryujinx.Tests.Cpu
 {
@@ -11,6 +10,21 @@ namespace Ryujinx.Tests.Cpu
 #if Alu32
 
 #region "ValueSource (Opcodes)"
+        private static uint[] _SU_H_AddSub_8_()
+        {
+            return new uint[]
+            {
+                0xe6100f90u, // SADD8  R0, R0, R0
+                0xe6100ff0u, // SSUB8  R0, R0, R0
+                0xe6300f90u, // SHADD8 R0, R0, R0
+                0xe6300ff0u, // SHSUB8 R0, R0, R0
+                0xe6500f90u, // UADD8  R0, R0, R0
+                0xe6500ff0u, // USUB8  R0, R0, R0
+                0xe6700f90u, // UHADD8 R0, R0, R0
+                0xe6700ff0u  // UHSUB8 R0, R0, R0
+            };
+        }
+
         private static uint[] _Ssat_Usat_()
         {
             return new uint[]
@@ -78,6 +92,44 @@ namespace Ryujinx.Tests.Cpu
         }
 
         [Test, Pairwise]
+        public void Shadd8([Values(0u, 0xdu)] uint rd,
+                           [Values(1u)] uint rm,
+                           [Values(2u)] uint rn,
+                           [Random(RndCnt)] uint w0,
+                           [Random(RndCnt)] uint w1,
+                           [Random(RndCnt)] uint w2)
+        {
+            uint opcode = 0xE6300F90u; // SHADD8 R0, R0, R0
+
+            opcode |= ((rm & 15) << 0) | ((rd & 15) << 12) | ((rn & 15) << 16);
+
+            uint sp = TestContext.CurrentContext.Random.NextUInt();
+
+            SingleOpcode(opcode, r0: w0, r1: w1, r2: w2, sp: sp);
+
+            CompareAgainstUnicorn();
+        }
+
+        [Test, Pairwise]
+        public void Shsub8([Values(0u, 0xdu)] uint rd,
+                           [Values(1u)] uint rm,
+                           [Values(2u)] uint rn,
+                           [Random(RndCnt)] uint w0,
+                           [Random(RndCnt)] uint w1,
+                           [Random(RndCnt)] uint w2)
+        {
+            uint opcode = 0xE6300FF0u; // SHSUB8 R0, R0, R0
+
+            opcode |= ((rm & 15) << 0) | ((rd & 15) << 12) | ((rn & 15) << 16);
+
+            uint sp = TestContext.CurrentContext.Random.NextUInt();
+
+            SingleOpcode(opcode, r0: w0, r1: w1, r2: w2, sp: sp);
+
+            CompareAgainstUnicorn();
+        }
+
+        [Test, Pairwise]
         public void Ssat_Usat([ValueSource("_Ssat_Usat_")] uint opcode,
                               [Values(0u, 0xdu)] uint rd,
                               [Values(1u, 0xdu)] uint rn,
@@ -108,6 +160,47 @@ namespace Ryujinx.Tests.Cpu
             uint w31 = TestContext.CurrentContext.Random.NextUInt();
 
             SingleOpcode(opcode, r1: wn, sp: w31);
+
+            CompareAgainstUnicorn();
+        }
+
+        [Test, Pairwise]
+        public void SU_H_AddSub_8([ValueSource("_SU_H_AddSub_8_")] uint opcode,
+                                  [Values(0u, 0xdu)] uint rd,
+                                  [Values(1u)] uint rm,
+                                  [Values(2u)] uint rn,
+                                  [Random(RndCnt)] uint w0,
+                                  [Random(RndCnt)] uint w1,
+                                  [Random(RndCnt)] uint w2)
+        {
+            opcode |= ((rm & 15) << 0) | ((rd & 15) << 12) | ((rn & 15) << 16);
+
+            uint sp = TestContext.CurrentContext.Random.NextUInt();
+
+            SingleOpcode(opcode, r0: w0, r1: w1, r2: w2, sp: sp);
+
+            CompareAgainstUnicorn();
+        }
+
+        [Test, Pairwise]
+        public void Uadd8_Sel([Values(0u)] uint rd,
+                              [Values(1u)] uint rm,
+                              [Values(2u)] uint rn,
+                              [Random(RndCnt)] uint w0,
+                              [Random(RndCnt)] uint w1,
+                              [Random(RndCnt)] uint w2)
+        {
+            uint opUadd8 = 0xE6500F90; // UADD8 R0, R0, R0
+            uint opSel   = 0xE6800FB0; // SEL R0, R0, R0
+
+            opUadd8  |= ((rm & 15) << 0) | ((rd & 15) << 12) | ((rn & 15) << 16);
+            opSel |= ((rm & 15) << 0) | ((rd & 15) << 12) | ((rn & 15) << 16);
+
+            SetContext(r0: w0, r1: w1, r2: w2);
+            Opcode(opUadd8);
+            Opcode(opSel);
+            Opcode(0xE12FFF1E); // BX LR
+            ExecuteOpcodes();
 
             CompareAgainstUnicorn();
         }

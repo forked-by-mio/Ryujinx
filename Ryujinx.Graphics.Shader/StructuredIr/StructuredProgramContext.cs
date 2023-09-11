@@ -2,6 +2,7 @@ using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using Ryujinx.Graphics.Shader.Translation;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 
 using static Ryujinx.Graphics.Shader.StructuredIr.AstHelper;
 
@@ -24,11 +25,64 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         private int _currEndIndex;
         private int _loopEndIndex;
 
+        public StructuredFunction CurrentFunction { get; private set; }
+
         public StructuredProgramInfo Info { get; }
 
         public ShaderConfig Config { get; }
 
-        public StructuredProgramContext(int blocksCount, ShaderConfig config)
+        public StructuredProgramContext(ShaderConfig config)
+        {
+            Info = new StructuredProgramInfo();
+
+            Config = config;
+
+            if (config.Stage == ShaderStage.TessellationControl)
+            {
+                // Required to index outputs.
+                Info.Inputs.Add(AttributeConsts.InvocationId);
+            }
+            else if (config.GpPassthrough)
+            {
+                int passthroughAttributes = config.PassthroughAttributes;
+                while (passthroughAttributes != 0)
+                {
+                    int index = BitOperations.TrailingZeroCount(passthroughAttributes);
+
+                    int attrBase = AttributeConsts.UserAttributeBase + index * 16;
+                    Info.Inputs.Add(attrBase);
+                    Info.Inputs.Add(attrBase + 4);
+                    Info.Inputs.Add(attrBase + 8);
+                    Info.Inputs.Add(attrBase + 12);
+
+                    passthroughAttributes &= ~(1 << index);
+                }
+
+                Info.Inputs.Add(AttributeConsts.PositionX);
+                Info.Inputs.Add(AttributeConsts.PositionY);
+                Info.Inputs.Add(AttributeConsts.PositionZ);
+                Info.Inputs.Add(AttributeConsts.PositionW);
+                Info.Inputs.Add(AttributeConsts.PointSize);
+
+                for (int i = 0; i < 8; i++)
+                {
+                    Info.Inputs.Add(AttributeConsts.ClipDistance0 + i * 4);
+                }
+            }
+            else if (config.Stage == ShaderStage.Fragment)
+            {
+                // Potentially used for texture coordinate scaling.
+                Info.Inputs.Add(AttributeConsts.PositionX);
+                Info.Inputs.Add(AttributeConsts.PositionY);
+            }
+        }
+
+        public void EnterFunction(
+            int blocksCount,
+            string name,
+            VariableType returnType,
+            VariableType[] inArguments,
+            VariableType[] outArguments)
         {
             _loopTails = new HashSet<BasicBlock>();
 
@@ -45,9 +99,12 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             _currEndIndex = blocksCount;
             _loopEndIndex = blocksCount;
 
-            Info = new StructuredProgramInfo(_currBlock);
+            CurrentFunction = new StructuredFunction(_currBlock, name, returnType, inArguments, outArguments);
+        }
 
-            Config = config;
+        public void LeaveFunction()
+        {
+            Info.Functions.Add(CurrentFunction);
         }
 
         public void EnterBlock(BasicBlock block)
@@ -185,7 +242,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             // so it is reset to false by the "local" assignment anyway.
             if (block.Index != 0)
             {
-                Info.MainBlock.AddFirst(Assign(gotoTempAsg.Destination, Const(IrConsts.False)));
+                CurrentFunction.MainBlock.AddFirst(Assign(gotoTempAsg.Destination, Const(IrConsts.False)));
             }
         }
 
@@ -253,16 +310,20 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         {
             AstOperand newTemp = Local(type);
 
-            Info.Locals.Add(newTemp);
+            CurrentFunction.Locals.Add(newTemp);
 
             return newTemp;
         }
 
         public AstOperand GetOperandDef(Operand operand)
         {
-            if (TryGetUserAttributeIndex(operand, out int attrIndex))
+            if (operand.Type == OperandType.Attribute)
             {
-                Info.OAttributes.Add(attrIndex);
+                Info.Outputs.Add(operand.Value & AttributeConsts.Mask);
+            }
+            else if (operand.Type == OperandType.AttributePerPatch)
+            {
+                Info.OutputsPerPatch.Add(operand.Value & AttributeConsts.Mask);
             }
 
             return GetOperand(operand);
@@ -270,17 +331,19 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
         public AstOperand GetOperandUse(Operand operand)
         {
-            if (TryGetUserAttributeIndex(operand, out int attrIndex))
+            // If this flag is set, we're reading from an output attribute instead.
+            if (operand.Type.IsAttribute() && (operand.Value & AttributeConsts.LoadOutputMask) != 0)
             {
-                Info.IAttributes.Add(attrIndex);
+                return GetOperandDef(operand);
             }
-            else if (operand.Type == OperandType.Attribute && operand.Value == AttributeConsts.InstanceId)
+
+            if (operand.Type == OperandType.Attribute)
             {
-                Info.UsesInstanceId = true;
+                Info.Inputs.Add(operand.Value);
             }
-            else if (operand.Type == OperandType.ConstantBuffer)
+            else if (operand.Type == OperandType.AttributePerPatch)
             {
-                Info.CBuffers.Add(operand.GetCbufSlot());
+                Info.InputsPerPatch.Add(operand.Value);
             }
 
             return GetOperand(operand);
@@ -295,6 +358,11 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
             if (operand.Type != OperandType.LocalVariable)
             {
+                if (operand.Type == OperandType.ConstantBuffer)
+                {
+                    Config.SetUsedConstantBuffer(operand.GetCbufSlot());
+                }
+
                 return new AstOperand(operand);
             }
 
@@ -304,35 +372,10 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
                 _localsMap.Add(operand, astOperand);
 
-                Info.Locals.Add(astOperand);
+                CurrentFunction.Locals.Add(astOperand);
             }
 
             return astOperand;
-        }
-
-        private static bool TryGetUserAttributeIndex(Operand operand, out int attrIndex)
-        {
-            if (operand.Type == OperandType.Attribute)
-            {
-                if (operand.Value >= AttributeConsts.UserAttributeBase &&
-                    operand.Value <  AttributeConsts.UserAttributeEnd)
-                {
-                    attrIndex = (operand.Value - AttributeConsts.UserAttributeBase) >> 4;
-
-                    return true;
-                }
-                else if (operand.Value >= AttributeConsts.FragmentOutputColorBase &&
-                         operand.Value <  AttributeConsts.FragmentOutputColorEnd)
-                {
-                    attrIndex = (operand.Value - AttributeConsts.FragmentOutputColorBase) >> 4;
-
-                    return true;
-                }
-            }
-
-            attrIndex = 0;
-
-            return false;
         }
     }
 }

@@ -1,28 +1,123 @@
-using LibHac;
+using LibHac.Common.FixedArrays;
 using LibHac.Fs;
+using LibHac.Loader;
+using LibHac.Tools.FsSystem;
+using Ryujinx.Common.Logging;
 using System;
-using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Ryujinx.HLE.Loaders.Executables
 {
-    class NsoExecutable : Nso, IExecutable
+    partial class NsoExecutable : IExecutable
     {
-        public byte[] Text { get; }
-        public byte[] Ro { get; }
-        public byte[] Data { get; }
+        public byte[] Program { get; }
+        public Span<byte> Text => Program.AsSpan((int)TextOffset, (int)TextSize);
+        public Span<byte> Ro   => Program.AsSpan((int)RoOffset,   (int)RoSize);
+        public Span<byte> Data => Program.AsSpan((int)DataOffset, (int)DataSize);
 
-        public int TextOffset => (int)Sections[0].MemoryOffset;
-        public int RoOffset => (int)Sections[1].MemoryOffset;
-        public int DataOffset => (int)Sections[2].MemoryOffset;
-        public int BssOffset => DataOffset + Data.Length;
+        public uint TextOffset { get; }
+        public uint RoOffset   { get; }
+        public uint DataOffset { get; }
+        public uint BssOffset => DataOffset + (uint)Data.Length;
 
-        public new int BssSize => (int)base.BssSize;
+        public uint TextSize { get; }
+        public uint RoSize   { get; }
+        public uint DataSize { get; }
+        public uint BssSize  { get; }
 
-        public NsoExecutable(IStorage inStorage) : base(inStorage)
+        public string        Name;
+        public Array32<byte> BuildId;
+
+        [GeneratedRegex(@"[a-z]:[\\/][ -~]{5,}\.nss", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+        private static partial Regex ModuleRegex();
+        [GeneratedRegex(@"sdk_version: ([0-9.]*)")]
+        private static partial Regex FsSdkRegex();
+        [GeneratedRegex(@"SDK MW[ -~]*")]
+        private static partial Regex SdkMwRegex();
+
+        public NsoExecutable(IStorage inStorage, string name = null)
         {
-            Text = Sections[0].DecompressSection();
-            Ro = Sections[1].DecompressSection();
-            Data =  Sections[2].DecompressSection();
+            NsoReader reader = new NsoReader();
+
+            reader.Initialize(inStorage.AsFile(OpenMode.Read)).ThrowIfFailure();
+
+            TextOffset = reader.Header.Segments[0].MemoryOffset;
+            RoOffset   = reader.Header.Segments[1].MemoryOffset;
+            DataOffset = reader.Header.Segments[2].MemoryOffset;
+            BssSize    = reader.Header.BssSize;
+
+            reader.GetSegmentSize(NsoReader.SegmentType.Data, out uint uncompressedSize).ThrowIfFailure();
+
+            Program = new byte[DataOffset + uncompressedSize];
+
+            TextSize = DecompressSection(reader, NsoReader.SegmentType.Text, TextOffset);
+            RoSize   = DecompressSection(reader, NsoReader.SegmentType.Ro,   RoOffset);
+            DataSize = DecompressSection(reader, NsoReader.SegmentType.Data, DataOffset);
+
+            Name    = name;
+            BuildId = reader.Header.ModuleId;
+
+            PrintRoSectionInfo();
+        }
+
+        private uint DecompressSection(NsoReader reader, NsoReader.SegmentType segmentType, uint offset)
+        {
+            reader.GetSegmentSize(segmentType, out uint uncompressedSize).ThrowIfFailure();
+
+            var span = Program.AsSpan((int)offset, (int)uncompressedSize);
+
+            reader.ReadSegment(segmentType, span).ThrowIfFailure();
+
+            return uncompressedSize;
+        }
+
+        private void PrintRoSectionInfo()
+        {
+            string        rawTextBuffer = Encoding.ASCII.GetString(Ro);
+            StringBuilder stringBuilder = new StringBuilder();
+
+            string modulePath = null;
+
+            if (BitConverter.ToInt32(Ro.Slice(0, 4)) == 0)
+            {
+                int length = BitConverter.ToInt32(Ro.Slice(4, 4));
+                if (length > 0)
+                {
+                    modulePath = Encoding.UTF8.GetString(Ro.Slice(8, length));
+                }
+            }
+
+            if (string.IsNullOrEmpty(modulePath))
+            {
+                Match moduleMatch = ModuleRegex().Match(rawTextBuffer);
+                if (moduleMatch.Success)
+                {
+                    modulePath = moduleMatch.Value;
+                }
+            }
+
+            stringBuilder.AppendLine($"    Module: {modulePath}");
+
+            Match fsSdkMatch = FsSdkRegex().Match(rawTextBuffer);
+            if (fsSdkMatch.Success)
+            {
+                stringBuilder.AppendLine($"    FS SDK Version: {fsSdkMatch.Value.Replace("sdk_version: ", "")}");
+            }
+
+            MatchCollection sdkMwMatches = SdkMwRegex().Matches(rawTextBuffer);
+            if (sdkMwMatches.Count != 0)
+            {
+                string libHeader  = "    SDK Libraries: ";
+                string libContent = string.Join($"\n{new string(' ', libHeader.Length)}", sdkMwMatches);
+
+                stringBuilder.AppendLine($"{libHeader}{libContent}");
+            }
+
+            if (stringBuilder.Length > 0)
+            {
+                Logger.Info?.Print(LogClass.Loader, $"{Name}:\n{stringBuilder.ToString().TrimEnd('\r', '\n')}");
+            }
         }
     }
 }

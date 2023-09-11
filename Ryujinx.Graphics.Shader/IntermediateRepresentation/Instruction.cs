@@ -31,6 +31,7 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         Branch,
         BranchIfFalse,
         BranchIfTrue,
+        Call,
         Ceiling,
         Clamp,
         ClampU32,
@@ -48,10 +49,14 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         ConditionalSelect,
         ConvertFP32ToFP64,
         ConvertFP64ToFP32,
-        ConvertFPToS32,
-        ConvertFPToU32,
-        ConvertS32ToFP,
-        ConvertU32ToFP,
+        ConvertFP32ToS32,
+        ConvertFP32ToU32,
+        ConvertFP64ToS32,
+        ConvertFP64ToU32,
+        ConvertS32ToFP32,
+        ConvertS32ToFP64,
+        ConvertU32ToFP32,
+        ConvertU32ToFP64,
         Copy,
         Cosine,
         Ddx,
@@ -61,13 +66,17 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         EmitVertex,
         EndPrimitive,
         ExponentB2,
-        FindFirstSetS32,
-        FindFirstSetU32,
+        FSIBegin,
+        FSIEnd,
+        FindLSB,
+        FindMSBS32,
+        FindMSBU32,
         Floor,
         FusedMultiplyAdd,
         GroupMemoryBarrier,
         ImageLoad,
         ImageStore,
+        ImageAtomic,
         IsNan,
         LoadAttribute,
         LoadConstant,
@@ -107,10 +116,17 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         ShuffleXor,
         Sine,
         SquareRoot,
+        StoreAttribute,
         StoreGlobal,
+        StoreGlobal16,
+        StoreGlobal8,
         StoreLocal,
         StoreShared,
+        StoreShared16,
+        StoreShared8,
         StoreStorage,
+        StoreStorage16,
+        StoreStorage8,
         Subtract,
         SwizzleAdd,
         TextureSample,
@@ -157,6 +173,12 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
             }
 
             return false;
+        }
+
+        public static bool IsTextureQuery(this Instruction inst)
+        {
+            inst &= Instruction.Mask;
+            return inst == Instruction.Lod || inst == Instruction.TextureSize;
         }
     }
 }

@@ -7,48 +7,68 @@ namespace ARMeilleure.Translation
 {
     class ControlFlowGraph
     {
+        private BasicBlock[] _postOrderBlocks;
+        private int[] _postOrderMap;
+
+        public int LocalsCount { get; private set; }
         public BasicBlock Entry { get; }
-
         public IntrusiveList<BasicBlock> Blocks { get; }
+        public BasicBlock[] PostOrderBlocks => _postOrderBlocks;
+        public int[] PostOrderMap => _postOrderMap;
 
-        public BasicBlock[] PostOrderBlocks { get; }
-
-        public int[] PostOrderMap { get; }
-
-        public ControlFlowGraph(BasicBlock entry, IntrusiveList<BasicBlock> blocks)
+        public ControlFlowGraph(BasicBlock entry, IntrusiveList<BasicBlock> blocks, int localsCount)
         {
-            Entry  = entry;
+            Entry = entry;
             Blocks = blocks;
+            LocalsCount = localsCount;
 
-            RemoveUnreachableBlocks(blocks);
+            Update();
+        }
 
-            HashSet<BasicBlock> visited = new HashSet<BasicBlock>();
+        public Operand AllocateLocal(OperandType type)
+        {
+            Operand result = Operand.Factory.Local(type);
 
-            Stack<BasicBlock> blockStack = new Stack<BasicBlock>();
+            result.NumberLocal(++LocalsCount);
 
-            PostOrderBlocks = new BasicBlock[blocks.Count];
+            return result;
+        }
 
-            PostOrderMap = new int[blocks.Count];
+        public void Update()
+        {
+            RemoveUnreachableBlocks(Blocks);
 
-            visited.Add(entry);
+            var visited = new HashSet<BasicBlock>();
+            var blockStack = new Stack<BasicBlock>();
 
-            blockStack.Push(entry);
+            Array.Resize(ref _postOrderBlocks, Blocks.Count);
+            Array.Resize(ref _postOrderMap, Blocks.Count);
+
+            visited.Add(Entry);
+            blockStack.Push(Entry);
 
             int index = 0;
 
             while (blockStack.TryPop(out BasicBlock block))
             {
-                if (block.Next != null && visited.Add(block.Next))
+                bool visitedNew = false;
+
+                for (int i = 0; i < block.SuccessorsCount; i++)
                 {
-                    blockStack.Push(block);
-                    blockStack.Push(block.Next);
+                    BasicBlock succ = block.GetSuccessor(i);
+
+                    if (visited.Add(succ))
+                    {
+                        blockStack.Push(block);
+                        blockStack.Push(succ);
+
+                        visitedNew = true;
+
+                        break;
+                    }
                 }
-                else if (block.Branch != null && visited.Add(block.Branch))
-                {
-                    blockStack.Push(block);
-                    blockStack.Push(block.Branch);
-                }
-                else
+
+                if (!visitedNew)
                 {
                     PostOrderMap[block.Index] = index;
 
@@ -59,26 +79,24 @@ namespace ARMeilleure.Translation
 
         private void RemoveUnreachableBlocks(IntrusiveList<BasicBlock> blocks)
         {
-            HashSet<BasicBlock> visited = new HashSet<BasicBlock>();
-
-            Queue<BasicBlock> workQueue = new Queue<BasicBlock>();
+            var visited = new HashSet<BasicBlock>();
+            var workQueue = new Queue<BasicBlock>();
 
             visited.Add(Entry);
-
             workQueue.Enqueue(Entry);
 
             while (workQueue.TryDequeue(out BasicBlock block))
             {
                 Debug.Assert(block.Index != -1, "Invalid block index.");
 
-                if (block.Next != null && visited.Add(block.Next))
+                for (int i = 0; i < block.SuccessorsCount; i++)
                 {
-                    workQueue.Enqueue(block.Next);
-                }
+                    BasicBlock succ = block.GetSuccessor(i);
 
-                if (block.Branch != null && visited.Add(block.Branch))
-                {
-                    workQueue.Enqueue(block.Branch);
+                    if (visited.Add(succ))
+                    {
+                        workQueue.Enqueue(succ);
+                    }
                 }
             }
 
@@ -93,8 +111,10 @@ namespace ARMeilleure.Translation
 
                     if (!visited.Contains(block))
                     {
-                        block.Next = null;
-                        block.Branch = null;
+                        while (block.SuccessorsCount > 0)
+                        {
+                            block.RemoveSuccessor(index: block.SuccessorsCount - 1);
+                        }
 
                         blocks.Remove(block);
                     }
@@ -112,14 +132,12 @@ namespace ARMeilleure.Translation
         {
             BasicBlock splitBlock = new BasicBlock(Blocks.Count);
 
-            if (predecessor.Next == successor)
+            for (int i = 0; i < predecessor.SuccessorsCount; i++)
             {
-                predecessor.Next = splitBlock;
-            }
-
-            if (predecessor.Branch == successor)
-            {
-                predecessor.Branch = splitBlock;
+                if (predecessor.GetSuccessor(i) == successor)
+                {
+                    predecessor.SetSuccessor(i, splitBlock);
+                }
             }
 
             if (splitBlock.Predecessors.Count == 0)
@@ -127,26 +145,7 @@ namespace ARMeilleure.Translation
                 throw new ArgumentException("Predecessor and successor are not connected.");
             }
 
-            // Insert the new block on the list of blocks.
-            BasicBlock succPrev = successor.ListPrevious;
-
-            if (succPrev != null && succPrev != predecessor && succPrev.Next == successor)
-            {
-                // Can't insert after the predecessor or before the successor.
-                // Here, we insert it before the successor by also spliting another
-                // edge (the one between the block before "successor" and "successor").
-                BasicBlock splitBlock2 = new BasicBlock(splitBlock.Index + 1);
-
-                succPrev.Next = splitBlock2;
-
-                splitBlock2.Branch = successor;
-
-                splitBlock2.Operations.AddLast(OperationHelper.Operation(Instruction.Branch, null));
-
-                Blocks.AddBefore(successor, splitBlock2);
-            }
-
-            splitBlock.Next = successor;
+            splitBlock.AddSuccessor(successor);
 
             Blocks.AddBefore(successor, splitBlock);
 

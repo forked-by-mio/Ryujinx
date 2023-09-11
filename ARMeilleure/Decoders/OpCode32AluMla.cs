@@ -1,16 +1,18 @@
 ﻿namespace ARMeilleure.Decoders
 {
-    class OpCode32AluMla : OpCode32, IOpCode32AluReg
+    class OpCode32AluMla : OpCode32, IOpCode32AluMla
     {
-        public int Rn { get; private set; }
-        public int Rm { get; private set; }
-        public int Ra { get; private set; }
-        public int Rd { get; private set; }
+        public int Rn { get; }
+        public int Rm { get; }
+        public int Ra { get; }
+        public int Rd { get; }
 
-        public bool NHigh { get; private set; }
-        public bool MHigh { get; private set; }
-        public bool R { get; private set; }
-        public bool SetFlags { get; private set; }
+        public bool NHigh { get; }
+        public bool MHigh { get; }
+        public bool R { get; }
+        public bool? SetFlags { get; }
+
+        public new static OpCode Create(InstDescriptor inst, ulong address, int opCode) => new OpCode32AluMla(inst, address, opCode);
 
         public OpCode32AluMla(InstDescriptor inst, ulong address, int opCode) : base(inst, address, opCode)
         {

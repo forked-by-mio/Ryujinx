@@ -2,17 +2,22 @@
 {
     class OpCode32SimdMovGpElem : OpCode32, IOpCode32Simd
     {
-        public int Size { get; private set; }
+        public int Size { get; }
 
-        public int Vd { get; private set; }
-        public int Rt { get; private set; }
-        public int Op { get; private set; }
-        public bool U { get; private set; }
+        public int Vd { get; }
+        public int Rt { get; }
+        public int Op { get; }
+        public bool U { get; }
 
-        public int Index { get; private set; }
+        public int Index { get; }
 
-        public OpCode32SimdMovGpElem(InstDescriptor inst, ulong address, int opCode) : base(inst, address, opCode)
+        public new static OpCode Create(InstDescriptor inst, ulong address, int opCode) => new OpCode32SimdMovGpElem(inst, address, opCode, false);
+        public static OpCode CreateT32(InstDescriptor inst, ulong address, int opCode) => new OpCode32SimdMovGpElem(inst, address, opCode, true);
+
+        public OpCode32SimdMovGpElem(InstDescriptor inst, ulong address, int opCode, bool isThumb) : base(inst, address, opCode)
         {
+            IsThumb = isThumb;
+
             Op = (opCode >> 20) & 0x1;
             U = ((opCode >> 23) & 1) != 0;
 
@@ -22,7 +27,7 @@
             {
                 Size = 0;
                 Index = opc & 0x7;
-            } 
+            }
             else if ((opc & 0b01001) == 0b00001)
             {
                 Size = 1;
@@ -32,7 +37,7 @@
             {
                 Size = 2;
                 Index = (opc >> 2) & 0x1;
-            } 
+            }
             else
             {
                 Instruction = InstDescriptor.Undefined;

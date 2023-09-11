@@ -1,31 +1,98 @@
 using Ryujinx.Common.Logging;
 using Ryujinx.Graphics.GAL;
-using Ryujinx.Graphics.Gpu.Memory;
+using Ryujinx.Graphics.Texture;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
 
 namespace Ryujinx.Graphics.Gpu.Image
 {
     /// <summary>
     /// Texture pool.
     /// </summary>
-    class TexturePool : Pool<Texture>
+    class TexturePool : Pool<Texture, TextureDescriptor>, IPool<TexturePool>
     {
-        private int _sequenceNumber;
+        private readonly GpuChannel _channel;
+        private readonly ConcurrentQueue<Texture> _dereferenceQueue = new ConcurrentQueue<Texture>();
+        private TextureDescriptor _defaultDescriptor;
 
         /// <summary>
-        /// Intrusive linked list node used on the texture pool cache.
+        /// Linked list node used on the texture pool cache.
         /// </summary>
         public LinkedListNode<TexturePool> CacheNode { get; set; }
 
         /// <summary>
-        /// Constructs a new instance of the texture pool.
+        /// Timestamp used by the texture pool cache, updated on every use of this texture pool.
+        /// </summary>
+        public ulong CacheTimestamp { get; set; }
+
+        /// <summary>
+        /// Creates a new instance of the texture pool.
         /// </summary>
         /// <param name="context">GPU context that the texture pool belongs to</param>
+        /// <param name="channel">GPU channel that the texture pool belongs to</param>
         /// <param name="address">Address of the texture pool in guest memory</param>
         /// <param name="maximumId">Maximum texture ID of the texture pool (equal to maximum textures minus one)</param>
-        public TexturePool(GpuContext context, ulong address, int maximumId) : base(context, address, maximumId) { }
+        public TexturePool(GpuContext context, GpuChannel channel, ulong address, int maximumId) : base(context, channel.MemoryManager.Physical, address, maximumId)
+        {
+            _channel = channel;
+        }
+
+        /// <summary>
+        /// Gets the texture descripor and texture with the given ID with no bounds check or synchronization.
+        /// </summary>
+        /// <param name="id">ID of the texture. This is effectively a zero-based index</param>
+        /// <param name="texture">The texture with the given ID</param>
+        /// <returns>The texture descriptor with the given ID</returns>
+        private ref readonly TextureDescriptor GetInternal(int id, out Texture texture)
+        {
+            texture = Items[id];
+
+            ref readonly TextureDescriptor descriptor = ref GetDescriptorRef(id);
+
+            if (texture == null)
+            {
+                TextureInfo info = GetInfo(descriptor, out int layerSize);
+
+                ProcessDereferenceQueue();
+
+                texture = PhysicalMemory.TextureCache.FindOrCreateTexture(_channel.MemoryManager, TextureSearchFlags.ForSampler, info, layerSize);
+
+                // If this happens, then the texture address is invalid, we can't add it to the cache.
+                if (texture == null)
+                {
+                    return ref descriptor;
+                }
+
+                texture.IncrementReferenceCount(this, id);
+
+                Items[id] = texture;
+
+                DescriptorCache[id] = descriptor;
+            }
+            else
+            {
+                if (texture.ChangedSize)
+                {
+                    // Texture changed size at one point - it may be a different size than the sampler expects.
+                    // This can be triggered when the size is changed by a size hint on copy or draw, but the texture has been sampled before.
+
+                    int baseLevel = descriptor.UnpackBaseLevel();
+                    int width = Math.Max(1, descriptor.UnpackWidth() >> baseLevel);
+                    int height = Math.Max(1, descriptor.UnpackHeight() >> baseLevel);
+
+                    if (texture.Info.Width != width || texture.Info.Height != height)
+                    {
+                        texture.ChangeSize(width, height, texture.Info.DepthOrLayers);
+                    }
+                }
+
+                // Memory is automatically synchronized on texture creation.
+                texture.SynchronizeMemory();
+            }
+
+            return ref descriptor;
+        }
 
         /// <summary>
         /// Gets the texture with the given ID.
@@ -39,55 +106,87 @@ namespace Ryujinx.Graphics.Gpu.Image
                 return null;
             }
 
-            if (_sequenceNumber != Context.SequenceNumber)
+            if (SequenceNumber != Context.SequenceNumber)
             {
-                _sequenceNumber = Context.SequenceNumber;
+                SequenceNumber = Context.SequenceNumber;
 
                 SynchronizeMemory();
             }
 
-            Texture texture = Items[id];
-
-            if (texture == null)
-            {
-                TextureDescriptor descriptor = GetDescriptor(id);
-
-                TextureInfo info = GetInfo(descriptor);
-
-                // Bad address. We can't add a texture with a invalid address
-                // to the cache.
-                if (info.Address == MemoryManager.BadAddress)
-                {
-                    return null;
-                }
-
-                texture = Context.Methods.TextureManager.FindOrCreateTexture(info, TextureSearchFlags.Sampler);
-
-                texture.IncrementReferenceCount();
-
-                Items[id] = texture;
-            }
-            else
-            {
-                // Memory is automatically synchronized on texture creation.
-                texture.SynchronizeMemory();
-            }
+            GetInternal(id, out Texture texture);
 
             return texture;
         }
 
         /// <summary>
-        /// Gets the texture descriptor from a given texture ID.
+        /// Gets the texture descriptor and texture with the given ID.
         /// </summary>
+        /// <remarks>
+        /// This method assumes that the pool has been manually synchronized before doing binding.
+        /// </remarks>
         /// <param name="id">ID of the texture. This is effectively a zero-based index</param>
-        /// <returns>The texture descriptor</returns>
-        public TextureDescriptor GetDescriptor(int id)
+        /// <param name="texture">The texture with the given ID</param>
+        /// <returns>The texture descriptor with the given ID</returns>
+        public ref readonly TextureDescriptor GetForBinding(int id, out Texture texture)
         {
-            ulong address = Address + (ulong)(uint)id * DescriptorSize;
+            if ((uint)id >= Items.Length)
+            {
+                texture = null;
+                return ref _defaultDescriptor;
+            }
 
-            ReadOnlySpan<byte> data = Context.PhysicalMemory.GetSpan(address, DescriptorSize);
+            // When getting for binding, assume the pool has already been synchronized.
 
-            return MemoryMarshal.Cast<byte, TextureDescriptor>(data)[0];
+            return ref GetInternal(id, out texture);
+        }
+
+        /// <summary>
+        /// Checks if the pool was modified, and returns the last sequence number where a modification was detected.
+        /// </summary>
+        /// <returns>A number that increments each time a modification is detected</returns>
+        public int CheckModified()
+        {
+            if (SequenceNumber != Context.SequenceNumber)
+            {
+                SequenceNumber = Context.SequenceNumber;
+
+                SynchronizeMemory();
+            }
+
+            return ModifiedSequenceNumber;
+        }
+
+        /// <summary>
+        /// Forcibly remove a texture from this pool's items.
+        /// If deferred, the dereference will be queued to occur on the render thread.
+        /// </summary>
+        /// <param name="texture">The texture being removed</param>
+        /// <param name="id">The ID of the texture in this pool</param>
+        /// <param name="deferred">If true, queue the dereference to happen on the render thread, otherwise dereference immediately</param>
+        public void ForceRemove(Texture texture, int id, bool deferred)
+        {
+            Items[id] = null;
+
+            if (deferred)
+            {
+                _dereferenceQueue.Enqueue(texture);
+            }
+            else
+            {
+                texture.DecrementReferenceCount();
+            }
+        }
+
+        /// <summary>
+        /// Process the dereference queue, decrementing the reference count for each texture in it.
+        /// This is used to ensure that texture disposal happens on the render thread.
+        /// </summary>
+        private void ProcessDereferenceQueue()
+        {
+            while (_dereferenceQueue.TryDequeue(out Texture toRemove))
+            {
+                toRemove.DecrementReferenceCount();
+            }
         }
 
         /// <summary>
@@ -97,6 +196,8 @@ namespace Ryujinx.Graphics.Gpu.Image
         /// <param name="size">Size of the range being invalidated</param>
         protected override void InvalidateRangeImpl(ulong address, ulong size)
         {
+            ProcessDereferenceQueue();
+
             ulong endAddress = address + size;
 
             for (; address < endAddress; address += DescriptorSize)
@@ -107,18 +208,16 @@ namespace Ryujinx.Graphics.Gpu.Image
 
                 if (texture != null)
                 {
-                    ReadOnlySpan<byte> data = Context.PhysicalMemory.GetSpan(address, DescriptorSize);
-
-                    TextureDescriptor descriptor = MemoryMarshal.Cast<byte, TextureDescriptor>(data)[0];
+                    TextureDescriptor descriptor = PhysicalMemory.Read<TextureDescriptor>(address);
 
                     // If the descriptors are the same, the texture is the same,
                     // we don't need to remove as it was not modified. Just continue.
-                    if (texture.IsPerfectMatch(GetInfo(descriptor), TextureSearchFlags.Strict))
+                    if (descriptor.Equals(ref DescriptorCache[id]))
                     {
                         continue;
                     }
 
-                    texture.DecrementReferenceCount();
+                    texture.DecrementReferenceCount(this, id);
 
                     Items[id] = null;
                 }
@@ -129,13 +228,10 @@ namespace Ryujinx.Graphics.Gpu.Image
         /// Gets texture information from a texture descriptor.
         /// </summary>
         /// <param name="descriptor">The texture descriptor</param>
+        /// <param name="layerSize">Layer size for textures using a sub-range of mipmap levels, otherwise 0</param>
         /// <returns>The texture information</returns>
-        private TextureInfo GetInfo(TextureDescriptor descriptor)
+        private TextureInfo GetInfo(in TextureDescriptor descriptor, out int layerSize)
         {
-            ulong address = Context.MemoryManager.Translate(descriptor.UnpackAddress());
-
-            int width         = descriptor.UnpackWidth();
-            int height        = descriptor.UnpackHeight();
             int depthOrLayers = descriptor.UnpackDepth();
             int levels        = descriptor.UnpackLevels();
 
@@ -152,12 +248,43 @@ namespace Ryujinx.Graphics.Gpu.Image
 
             Target target = descriptor.UnpackTextureTarget().Convert((samplesInX | samplesInY) != 1);
 
+            int width = target == Target.TextureBuffer ? descriptor.UnpackBufferTextureWidth() : descriptor.UnpackWidth();
+            int height = descriptor.UnpackHeight();
+
+            if (target == Target.Texture2DMultisample || target == Target.Texture2DMultisampleArray)
+            {
+                // This is divided back before the backend texture is created.
+                width *= samplesInX;
+                height *= samplesInY;
+            }
+
+            // We use 2D targets for 1D textures as that makes texture cache
+            // management easier. We don't know the target for render target
+            // and copies, so those would normally use 2D targets, which are
+            // not compatible with 1D targets. By doing that we also allow those
+            // to match when looking for compatible textures on the cache.
+            if (target == Target.Texture1D)
+            {
+                target = Target.Texture2D;
+                height = 1;
+            }
+            else if (target == Target.Texture1DArray)
+            {
+                target = Target.Texture2DArray;
+                height = 1;
+            }
+
             uint format = descriptor.UnpackFormat();
             bool srgb   = descriptor.UnpackSrgb();
 
+            ulong gpuVa = descriptor.UnpackAddress();
+
             if (!FormatTable.TryGetTextureFormat(format, srgb, out FormatInfo formatInfo))
             {
-                Logger.PrintDebug(LogClass.Gpu, $"Invalid texture format 0x{format:X} (sRGB: {srgb}).");
+                if (gpuVa != 0 && (int)format > 0)
+                {
+                    Logger.Error?.Print(LogClass.Gpu, $"Invalid texture format 0x{format:X} (sRGB: {srgb}).");
+                }
 
                 formatInfo = FormatInfo.Default;
             }
@@ -166,6 +293,53 @@ namespace Ryujinx.Graphics.Gpu.Image
             int gobBlocksInZ = descriptor.UnpackGobBlocksInZ();
 
             int gobBlocksInTileX = descriptor.UnpackGobBlocksInTileX();
+
+            layerSize = 0;
+
+            int minLod = descriptor.UnpackBaseLevel();
+            int maxLod = descriptor.UnpackMaxLevelInclusive();
+
+            // Linear textures don't support mipmaps, so we don't handle this case here.
+            if ((minLod != 0 || maxLod + 1 != levels) && target != Target.TextureBuffer && !isLinear)
+            {
+                int depth  = TextureInfo.GetDepth(target, depthOrLayers);
+                int layers = TextureInfo.GetLayers(target, depthOrLayers);
+
+                SizeInfo sizeInfo = SizeCalculator.GetBlockLinearTextureSize(
+                    width,
+                    height,
+                    depth,
+                    levels,
+                    layers,
+                    formatInfo.BlockWidth,
+                    formatInfo.BlockHeight,
+                    formatInfo.BytesPerPixel,
+                    gobBlocksInY,
+                    gobBlocksInZ,
+                    gobBlocksInTileX);
+
+                layerSize = sizeInfo.LayerSize;
+
+                if (minLod != 0 && minLod < levels)
+                {
+                    // If the base level is not zero, we additionally add the mip level offset
+                    // to the address, this allows the texture manager to find the base level from the
+                    // address if there is a overlapping texture on the cache that can contain the new texture.
+                    gpuVa += (ulong)sizeInfo.GetMipOffset(minLod);
+
+                    width  = Math.Max(1, width  >> minLod);
+                    height = Math.Max(1, height >> minLod);
+
+                    if (target == Target.Texture3D)
+                    {
+                        depthOrLayers = Math.Max(1, depthOrLayers >> minLod);
+                    }
+
+                    (gobBlocksInY, gobBlocksInZ) = SizeCalculator.GetMipGobBlockSizes(height, depth, formatInfo.BlockHeight, gobBlocksInY, gobBlocksInZ);
+                }
+
+                levels = (maxLod - minLod) + 1;
+            }
 
             SwizzleComponent swizzleR = descriptor.UnpackSwizzleR().Convert();
             SwizzleComponent swizzleG = descriptor.UnpackSwizzleG().Convert();
@@ -179,8 +353,24 @@ namespace Ryujinx.Graphics.Gpu.Image
                 swizzleB,
                 swizzleA);
 
+            if (formatInfo.Format.IsDepthOrStencil())
+            {
+                swizzleR = SwizzleComponent.Red;
+                swizzleG = SwizzleComponent.Red;
+                swizzleB = SwizzleComponent.Red;
+
+                if (depthStencilMode == DepthStencilMode.Depth)
+                {
+                    swizzleA = SwizzleComponent.One;
+                }
+                else
+                {
+                    swizzleA = SwizzleComponent.Red;
+                }
+            }
+
             return new TextureInfo(
-                address,
+                gpuVa,
                 width,
                 height,
                 depthOrLayers,
@@ -227,7 +417,7 @@ namespace Ryujinx.Graphics.Gpu.Image
                 return DepthStencilMode.Depth;
             }
 
-            if (format == Format.D24X8Unorm || format == Format.D24UnormS8Uint)
+            if (format == Format.D24UnormS8Uint)
             {
                 return component == SwizzleComponent.Red
                     ? DepthStencilMode.Stencil
@@ -259,7 +449,14 @@ namespace Ryujinx.Graphics.Gpu.Image
         /// <param name="item">The texture to be deleted</param>
         protected override void Delete(Texture item)
         {
-            item?.DecrementReferenceCount();
+            item?.DecrementReferenceCount(this);
+        }
+
+        public override void Dispose()
+        {
+            ProcessDereferenceQueue();
+
+            base.Dispose();
         }
     }
 }

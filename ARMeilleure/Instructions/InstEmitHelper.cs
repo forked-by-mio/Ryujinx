@@ -4,17 +4,12 @@ using ARMeilleure.State;
 using ARMeilleure.Translation;
 using System;
 
-using static ARMeilleure.IntermediateRepresentation.OperandHelper;
+using static ARMeilleure.IntermediateRepresentation.Operand.Factory;
 
 namespace ARMeilleure.Instructions
 {
     static class InstEmitHelper
     {
-        public static bool IsThumb(OpCode op)
-        {
-            return op is OpCodeT16;
-        }
-
         public static Operand GetExtendedM(ArmEmitterContext context, int rm, IntType type)
         {
             Operand value = GetIntOrZR(context, rm);
@@ -47,6 +42,20 @@ namespace ARMeilleure.Instructions
             }
         }
 
+        public static Operand GetIntA32AlignedPC(ArmEmitterContext context, int regIndex)
+        {
+            if (regIndex == RegisterAlias.Aarch32Pc)
+            {
+                OpCode32 op = (OpCode32)context.CurrOp;
+
+                return Const((int)(op.GetPc() & 0xfffffffc));
+            }
+            else
+            {
+                return Register(GetRegisterAlias(context.Mode, regIndex), RegisterType.Integer, OperandType.I32);
+            }
+        }
+
         public static Operand GetVecA32(int regIndex)
         {
             return Register(regIndex, RegisterType.Vector, OperandType.V128);
@@ -56,7 +65,10 @@ namespace ARMeilleure.Instructions
         {
             if (regIndex == RegisterAlias.Aarch32Pc)
             {
-                context.StoreToContext();
+                if (!IsA32Return(context))
+                {
+                    context.StoreToContext();
+                }
 
                 EmitBxWritePc(context, value);
             }
@@ -169,7 +181,7 @@ namespace ARMeilleure.Instructions
 
             SetFlag(context, PState.TFlag, mode);
 
-            Operand addr = context.ConditionalSelect(mode, context.BitwiseOr(pc, Const((int)InstEmitFlowHelper.CallFlag)), context.BitwiseAnd(pc, Const(~3)));
+            Operand addr = context.ConditionalSelect(mode, context.BitwiseAnd(pc, Const(~1)), context.BitwiseAnd(pc, Const(~3)));
 
             InstEmitFlowHelper.EmitVirtualJump(context, addr, isReturn);
         }

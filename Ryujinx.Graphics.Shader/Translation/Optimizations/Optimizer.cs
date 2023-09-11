@@ -9,11 +9,26 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
     {
         public static void RunPass(BasicBlock[] blocks, ShaderConfig config)
         {
+            RunOptimizationPasses(blocks);
+
+            int sbUseMask = 0;
+
+            // Those passes are looking for specific patterns and only needs to run once.
             for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
             {
-                GlobalToStorage.RunPass(blocks[blkIndex], config);
+                GlobalToStorage.RunPass(blocks[blkIndex], config, ref sbUseMask);
+                BindlessToIndexed.RunPass(blocks[blkIndex], config);
+                BindlessElimination.RunPass(blocks[blkIndex], config);
             }
 
+            config.SetAccessibleStorageBuffersMask(sbUseMask);
+
+            // Run optimizations one last time to remove any code that is now optimizable after above passes.
+            RunOptimizationPasses(blocks);
+        }
+
+        private static void RunOptimizationPasses(BasicBlock[] blocks)
+        {
             bool modified;
 
             do
@@ -34,6 +49,11 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
                         if (!(node.Value is Operation operation) || isUnused)
                         {
+                            if (node.Value is PhiNode phi && !isUnused)
+                            {
+                                isUnused = PropagatePhi(phi);
+                            }
+
                             if (isUnused)
                             {
                                 RemoveNode(block, node);
@@ -63,7 +83,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                             else if ((operation.Inst == Instruction.PackHalf2x16 && PropagatePack(operation)) ||
                                      (operation.Inst == Instruction.ShuffleXor   && MatchDdxOrDdy(operation)))
                             {
-                                if (operation.Dest.UseOps.Count == 0)
+                                if (DestHasNoUses(operation))
                                 {
                                     RemoveNode(block, node);
                                 }
@@ -84,17 +104,13 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 }
             }
             while (modified);
-
-            for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
-            {
-                BindlessToIndexed.RunPass(blocks[blkIndex]);
-            }
         }
 
         private static void PropagateCopy(Operation copyOp)
         {
             // Propagate copy source operand to all uses of
             // the destination operand.
+
             Operand dest = copyOp.Dest;
             Operand src  = copyOp.GetSource(0);
 
@@ -110,6 +126,53 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     }
                 }
             }
+        }
+
+        private static bool PropagatePhi(PhiNode phi)
+        {
+            // If all phi sources are the same, we can propagate it and remove the phi.
+
+            Operand firstSrc = phi.GetSource(0);
+
+            for (int index = 1; index < phi.SourcesCount; index++)
+            {
+                if (!IsSameOperand(firstSrc, phi.GetSource(index)))
+                {
+                    return false;
+                }
+            }
+
+            // All sources are equal, we can propagate the value.
+
+            Operand dest = phi.Dest;
+
+            INode[] uses = dest.UseOps.ToArray();
+
+            foreach (INode useNode in uses)
+            {
+                for (int index = 0; index < useNode.SourcesCount; index++)
+                {
+                    if (useNode.GetSource(index) == dest)
+                    {
+                        useNode.SetSource(index, firstSrc);
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsSameOperand(Operand x, Operand y)
+        {
+            if (x.Type != y.Type || x.Value != y.Value)
+            {
+                return false;
+            }
+
+            return x.Type == OperandType.Attribute ||
+                   x.Type == OperandType.AttributePerPatch ||
+                   x.Type == OperandType.Constant ||
+                   x.Type == OperandType.ConstantBuffer;
         }
 
         private static bool PropagatePack(Operation packOp)
@@ -243,6 +306,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
                     if (src.UseOps.Remove(node) && src.UseOps.Count == 0)
                     {
+                        Debug.Assert(src.AsgOp != null);
                         nodes.Enqueue(src.AsgOp);
                     }
                 }
@@ -251,7 +315,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
         private static bool IsUnused(INode node)
         {
-            return !HasSideEffects(node) && DestIsLocalVar(node) && node.Dest.UseOps.Count == 0;
+            return !HasSideEffects(node) && DestIsLocalVar(node) && DestHasNoUses(node);
         }
 
         private static bool HasSideEffects(INode node)
@@ -270,6 +334,8 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     case Instruction.AtomicOr:
                     case Instruction.AtomicSwap:
                     case Instruction.AtomicXor:
+                    case Instruction.Call:
+                    case Instruction.ImageAtomic:
                         return true;
                 }
             }
@@ -279,7 +345,37 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
         private static bool DestIsLocalVar(INode node)
         {
-            return node.Dest != null && node.Dest.Type == OperandType.LocalVariable;
+            if (node.DestsCount == 0)
+            {
+                return false;
+            }
+
+            for (int index = 0; index < node.DestsCount; index++)
+            {
+                Operand dest = node.GetDest(index);
+
+                if (dest != null && dest.Type != OperandType.LocalVariable)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool DestHasNoUses(INode node)
+        {
+            for (int index = 0; index < node.DestsCount; index++)
+            {
+                Operand dest = node.GetDest(index);
+
+                if (dest != null && dest.UseOps.Count != 0)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
     }
 }

@@ -10,7 +10,7 @@ namespace ARMeilleure.Decoders
 
         // Helpers to index doublewords within quad words. Essentially, looping over the vector starts at quadword Q and index Fx or Ix within it,
         // depending on instruction type.
-        // 
+        //
         // Qx: The quadword register that the target vector is contained in.
         // Ix: The starting index of the target vector within the quadword, with size treated as integer.
         // Fx: The starting index of the target vector within the quadword, with size treated as floating point. (16 or 32)
@@ -47,6 +47,9 @@ namespace ARMeilleure.Decoders
             throw new InvalidOperationException();
         }
 
-        public OpCode32SimdBase(InstDescriptor inst, ulong address, int opCode) : base(inst, address, opCode) { }
+        protected OpCode32SimdBase(InstDescriptor inst, ulong address, int opCode, bool isThumb) : base(inst, address, opCode)
+        {
+            IsThumb = isThumb;
+        }
     }
 }

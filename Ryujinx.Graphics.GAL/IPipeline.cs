@@ -1,4 +1,5 @@
 using Ryujinx.Graphics.Shader;
+using System;
 
 namespace Ryujinx.Graphics.GAL
 {
@@ -6,13 +7,23 @@ namespace Ryujinx.Graphics.GAL
     {
         void Barrier();
 
-        void ClearRenderTargetColor(int index, uint componentMask, ColorF color);
+        void BeginTransformFeedback(PrimitiveTopology topology);
+
+        void ClearBuffer(BufferHandle destination, int offset, int size, uint value);
+
+        void ClearRenderTargetColor(int index, int layer, int layerCount, uint componentMask, ColorF color);
 
         void ClearRenderTargetDepthStencil(
+            int layer,
+            int layerCount,
             float depthValue,
-            bool  depthMask,
-            int   stencilValue,
-            int   stencilMask);
+            bool depthMask,
+            int stencilValue,
+            int stencilMask);
+
+        void CommandBufferBarrier();
+
+        void CopyBuffer(BufferHandle source, BufferHandle destination, int srcOffset, int dstOffset, int size);
 
         void DispatchCompute(int groupsX, int groupsY, int groupsZ);
 
@@ -23,13 +34,20 @@ namespace Ryujinx.Graphics.GAL
             int firstIndex,
             int firstVertex,
             int firstInstance);
+        void DrawIndexedIndirect(BufferRange indirectBuffer);
+        void DrawIndexedIndirectCount(BufferRange indirectBuffer, BufferRange parameterBuffer, int maxDrawCount, int stride);
+        void DrawIndirect(BufferRange indirectBuffer);
+        void DrawIndirectCount(BufferRange indirectBuffer, BufferRange parameterBuffer, int maxDrawCount, int stride);
+        void DrawTexture(ITexture texture, ISampler sampler, Extents2DF srcRegion, Extents2DF dstRegion);
+
+        void EndTransformFeedback();
+
+        void SetAlphaTest(bool enable, float reference, CompareOp op);
 
         void SetBlendState(int index, BlendDescriptor blend);
 
-        void SetBlendColor(ColorF color);
-
         void SetDepthBias(PolygonModeMask enables, float factor, float units, float clamp);
-        void SetDepthClamp(bool clampNear, bool clampFar);
+        void SetDepthClamp(bool clamp);
         void SetDepthMode(DepthMode mode);
         void SetDepthTest(DepthTestDescriptor depthTest);
 
@@ -39,9 +57,18 @@ namespace Ryujinx.Graphics.GAL
 
         void SetIndexBuffer(BufferRange buffer, IndexType type);
 
-        void SetImage(int index, ShaderStage stage, ITexture texture);
+        void SetImage(int binding, ITexture texture, Format imageFormat);
 
-        void SetPointSize(float size);
+        void SetLineParameters(float width, bool smooth);
+
+        void SetLogicOpState(bool enable, LogicalOp op);
+
+        void SetMultisampleState(MultisampleDescriptor multisample);
+
+        void SetPatchParameters(int vertices, ReadOnlySpan<float> defaultOuterLevel, ReadOnlySpan<float> defaultInnerLevel);
+        void SetPointParameters(float size, bool isProgramPointSize, bool enablePointSprite, Origin origin);
+
+        void SetPolygonMode(PolygonMode frontMode, PolygonMode backMode);
 
         void SetPrimitiveRestart(bool enable, int index);
 
@@ -51,29 +78,36 @@ namespace Ryujinx.Graphics.GAL
 
         void SetRasterizerDiscard(bool discard);
 
-        void SetRenderTargetColorMasks(uint[] componentMask);
-
+        void SetRenderTargetScale(float scale);
+        void SetRenderTargetColorMasks(ReadOnlySpan<uint> componentMask);
         void SetRenderTargets(ITexture[] colors, ITexture depthStencil);
 
-        void SetSampler(int index, ShaderStage stage, ISampler sampler);
-
-        void SetScissorEnable(int index, bool enable);
-        void SetScissor(int index, int x, int y, int width, int height);
+        void SetScissors(ReadOnlySpan<Rectangle<int>> regions);
 
         void SetStencilTest(StencilTestDescriptor stencilTest);
 
-        void SetStorageBuffer(int index, ShaderStage stage, BufferRange buffer);
+        void SetStorageBuffers(ReadOnlySpan<BufferAssignment> buffers);
 
-        void SetTexture(int index, ShaderStage stage, ITexture texture);
+        void SetTextureAndSampler(ShaderStage stage, int binding, ITexture texture, ISampler sampler);
 
-        void SetUniformBuffer(int index, ShaderStage stage, BufferRange buffer);
+        void SetTransformFeedbackBuffers(ReadOnlySpan<BufferRange> buffers);
+        void SetUniformBuffers(ReadOnlySpan<BufferAssignment> buffers);
 
-        void SetVertexAttribs(VertexAttribDescriptor[] vertexAttribs);
-        void SetVertexBuffers(VertexBufferDescriptor[] vertexBuffers);
+        void SetUserClipDistance(int index, bool enableClip);
 
-        void SetViewports(int first, Viewport[] viewports);
+        void SetVertexAttribs(ReadOnlySpan<VertexAttribDescriptor> vertexAttribs);
+        void SetVertexBuffers(ReadOnlySpan<VertexBufferDescriptor> vertexBuffers);
+
+        void SetViewports(ReadOnlySpan<Viewport> viewports, bool disableTransform);
 
         void TextureBarrier();
         void TextureBarrierTiled();
+
+        bool TryHostConditionalRendering(ICounterEvent value, ulong compare, bool isEqual);
+        bool TryHostConditionalRendering(ICounterEvent value, ICounterEvent compare, bool isEqual);
+        void EndHostConditionalRendering();
+
+        void UpdatePageTableGpuAddress(ulong address);
+        void UpdateRenderScale(ReadOnlySpan<float> scales, int totalCount, int fragmentCount);
     }
 }

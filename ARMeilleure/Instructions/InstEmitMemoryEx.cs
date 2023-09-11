@@ -6,7 +6,7 @@ using System.Diagnostics;
 
 using static ARMeilleure.Instructions.InstEmitHelper;
 using static ARMeilleure.Instructions.InstEmitMemoryExHelper;
-using static ARMeilleure.IntermediateRepresentation.OperandHelper;
+using static ARMeilleure.IntermediateRepresentation.Operand.Factory;
 
 namespace ARMeilleure.Instructions
 {
@@ -23,7 +23,12 @@ namespace ARMeilleure.Instructions
 
         public static void Clrex(ArmEmitterContext context)
         {
-            context.Call(new _Void(NativeInterface.ClearExclusive));
+            EmitClearExclusive(context);
+        }
+
+        public static void Csdb(ArmEmitterContext context)
+        {
+            // Execute as no-op.
         }
 
         public static void Dmb(ArmEmitterContext context) => EmitBarrier(context);
@@ -101,7 +106,8 @@ namespace ARMeilleure.Instructions
                 SetIntOrZR(context, op.Rt, value);
             }
         }
-        public static void Pfrm(ArmEmitterContext context)
+
+        public static void Prfm(ArmEmitterContext context)
         {
             // Memory Prefetch, execute as no-op.
         }
@@ -129,16 +135,9 @@ namespace ARMeilleure.Instructions
             bool ordered   = (accType & AccessType.Ordered)   != 0;
             bool exclusive = (accType & AccessType.Exclusive) != 0;
 
-            if (ordered)
-            {
-                EmitBarrier(context);
-            }
-
             Operand address = context.Copy(GetIntOrSP(context, op.Rn));
 
             Operand t = GetIntOrZR(context, op.Rt);
-
-            Operand s = null;
 
             if (pair)
             {
@@ -158,26 +157,22 @@ namespace ARMeilleure.Instructions
                     value = context.VectorInsert(value,                t2, 1);
                 }
 
-                s = EmitStoreExclusive(context, address, value, exclusive, op.Size + 1);
+                EmitStoreExclusive(context, address, value, exclusive, op.Size + 1, op.Rs, a32: false);
             }
             else
             {
-                s = EmitStoreExclusive(context, address, t, exclusive, op.Size);
+                EmitStoreExclusive(context, address, t, exclusive, op.Size, op.Rs, a32: false);
             }
 
-            if (s != null)
+            if (ordered)
             {
-                // This is only needed for exclusive stores. The function returns 0
-                // when the store is successful, and 1 otherwise.
-                SetIntOrZR(context, op.Rs, s);
+                EmitBarrier(context);
             }
         }
 
         private static void EmitBarrier(ArmEmitterContext context)
         {
-            // Note: This barrier is most likely not necessary, and probably
-            // doesn't make any difference since we need to do a ton of stuff
-            // (software MMU emulation) to read or write anything anyway.
+            context.MemoryBarrier();
         }
     }
 }

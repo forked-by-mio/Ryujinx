@@ -1,11 +1,13 @@
-﻿using ARMeilleure.Decoders;
+using ARMeilleure.Decoders;
 using ARMeilleure.IntermediateRepresentation;
 using ARMeilleure.Translation;
 using System;
 using System.Diagnostics;
+using System.Reflection;
+
 using static ARMeilleure.Instructions.InstEmitHelper;
 using static ARMeilleure.Instructions.InstEmitSimdHelper;
-using static ARMeilleure.IntermediateRepresentation.OperandHelper;
+using static ARMeilleure.IntermediateRepresentation.Operand.Factory;
 
 namespace ARMeilleure.Instructions
 {
@@ -39,7 +41,7 @@ namespace ARMeilleure.Instructions
             {
                 // From dreg.
                 return context.VectorExtract(type, GetVecA32(reg >> 1), reg & 1);
-            } 
+            }
             else
             {
                 // From sreg.
@@ -64,6 +66,22 @@ namespace ARMeilleure.Instructions
                 vec = GetVecA32(reg >> 2);
                 insert = context.VectorInsert(vec, value, reg & 3);
             }
+
+            context.Copy(vec, insert);
+        }
+
+        public static Operand ExtractScalar16(ArmEmitterContext context, int reg, bool top)
+        {
+            return context.VectorExtract16(GetVecA32(reg >> 2), ((reg & 3) << 1) | (top ? 1 : 0));
+        }
+
+        public static void InsertScalar16(ArmEmitterContext context, int reg, bool top, Operand value)
+        {
+            Debug.Assert(value.Type == OperandType.FP32 || value.Type == OperandType.I32);
+
+            Operand vec, insert;
+            vec = GetVecA32(reg >> 2);
+            insert = context.VectorInsert16(vec, value, ((reg & 3) << 1) | (top ? 1 : 0));
 
             context.Copy(vec, insert);
         }
@@ -217,6 +235,25 @@ namespace ARMeilleure.Instructions
 
         // Integer
 
+        public static void EmitVectorUnaryAccumulateOpI32(ArmEmitterContext context, Func1I emit, bool signed)
+        {
+            OpCode32Simd op = (OpCode32Simd)context.CurrOp;
+
+            Operand res = GetVecA32(op.Qd);
+
+            int elems = op.GetBytesCount() >> op.Size;
+
+            for (int index = 0; index < elems; index++)
+            {
+                Operand de = EmitVectorExtract32(context, op.Qd, op.Id + index, op.Size, signed);
+                Operand me = EmitVectorExtract32(context, op.Qm, op.Im + index, op.Size, signed);
+
+                res = EmitVectorInsert(context, res, context.Add(de, emit(me)), op.Id + index, op.Size);
+            }
+
+            context.Copy(GetVecA32(op.Qd), res);
+        }
+
         public static void EmitVectorUnaryOpI32(ArmEmitterContext context, Func1I emit, bool signed)
         {
             OpCode32Simd op = (OpCode32Simd)context.CurrOp;
@@ -279,6 +316,59 @@ namespace ARMeilleure.Instructions
             context.Copy(GetVecA32(op.Qd), res);
         }
 
+        public static void EmitVectorBinaryWideOpI32(ArmEmitterContext context, Func2I emit, bool signed)
+        {
+            OpCode32SimdReg op = (OpCode32SimdReg)context.CurrOp;
+
+            Operand res = context.VectorZero();
+
+            int elems = op.GetBytesCount() >> op.Size;
+
+            for (int index = 0; index < elems; index++)
+            {
+                Operand ne = EmitVectorExtract32(context, op.Qn, op.In + index, op.Size + 1, signed);
+                Operand me = EmitVectorExtract32(context, op.Qm, op.Im + index, op.Size,     signed);
+
+                if (op.Size == 2)
+                {
+                    me = signed ? context.SignExtend32(OperandType.I64, me) : context.ZeroExtend32(OperandType.I64, me);
+                }
+
+                res = EmitVectorInsert(context, res, emit(ne, me), index, op.Size + 1);
+            }
+
+            context.Copy(GetVecA32(op.Qd), res);
+        }
+
+        public static void EmitVectorImmBinaryQdQmOpZx32(ArmEmitterContext context, Func2I emit)
+        {
+            EmitVectorImmBinaryQdQmOpI32(context, emit, false);
+        }
+
+        public static void EmitVectorImmBinaryQdQmOpSx32(ArmEmitterContext context, Func2I emit)
+        {
+            EmitVectorImmBinaryQdQmOpI32(context, emit, true);
+        }
+
+        public static void EmitVectorImmBinaryQdQmOpI32(ArmEmitterContext context, Func2I emit, bool signed)
+        {
+            OpCode32SimdShImm op = (OpCode32SimdShImm)context.CurrOp;
+
+            Operand res = GetVecA32(op.Qd);
+
+            int elems = op.GetBytesCount() >> op.Size;
+
+            for (int index = 0; index < elems; index++)
+            {
+                Operand de = EmitVectorExtract32(context, op.Qd, op.Id + index, op.Size, signed);
+                Operand me = EmitVectorExtract32(context, op.Qm, op.Im + index, op.Size, signed);
+
+                res = EmitVectorInsert(context, res, emit(de, me), op.Id + index, op.Size);
+            }
+
+            context.Copy(GetVecA32(op.Qd), res);
+        }
+
         public static void EmitVectorTernaryLongOpI32(ArmEmitterContext context, Func3I emit, bool signed)
         {
             OpCode32SimdReg op = (OpCode32SimdReg)context.CurrOp;
@@ -330,6 +420,18 @@ namespace ARMeilleure.Instructions
             EmitVectorUnaryOpI32(context, emit, true);
         }
 
+        public static void EmitVectorUnaryOpSx32(ArmEmitterContext context, Func1I emit, bool accumulate)
+        {
+            if (accumulate)
+            {
+                EmitVectorUnaryAccumulateOpI32(context, emit, true);
+            }
+            else
+            {
+                EmitVectorUnaryOpI32(context, emit, true);
+            }
+        }
+
         public static void EmitVectorBinaryOpSx32(ArmEmitterContext context, Func2I emit)
         {
             EmitVectorBinaryOpI32(context, emit, true);
@@ -343,6 +445,18 @@ namespace ARMeilleure.Instructions
         public static void EmitVectorUnaryOpZx32(ArmEmitterContext context, Func1I emit)
         {
             EmitVectorUnaryOpI32(context, emit, false);
+        }
+
+        public static void EmitVectorUnaryOpZx32(ArmEmitterContext context, Func1I emit, bool accumulate)
+        {
+            if (accumulate)
+            {
+                EmitVectorUnaryAccumulateOpI32(context, emit, false);
+            }
+            else
+            {
+                EmitVectorUnaryOpI32(context, emit, false);
+            }
         }
 
         public static void EmitVectorBinaryOpZx32(ArmEmitterContext context, Func2I emit)
@@ -537,6 +651,34 @@ namespace ARMeilleure.Instructions
             context.Copy(GetVecA32(op.Qd), res);
         }
 
+        public static void EmitVectorPairwiseLongOpI32(ArmEmitterContext context, Func2I emit, bool signed)
+        {
+            OpCode32Simd op = (OpCode32Simd)context.CurrOp;
+
+            int elems = (op.Q ? 16 : 8) >> op.Size;
+            int pairs = elems >> 1;
+            int id = (op.Vd & 1) * pairs;
+
+            Operand res = GetVecA32(op.Qd);
+
+            for (int index = 0; index < pairs; index++)
+            {
+                int pairIndex = index << 1;
+                Operand m1 = EmitVectorExtract32(context, op.Qm, op.Im + pairIndex, op.Size, signed);
+                Operand m2 = EmitVectorExtract32(context, op.Qm, op.Im + pairIndex + 1, op.Size, signed);
+
+                if (op.Size == 2)
+                {
+                    m1 = signed ? context.SignExtend32(OperandType.I64, m1) : context.ZeroExtend32(OperandType.I64, m1);
+                    m2 = signed ? context.SignExtend32(OperandType.I64, m2) : context.ZeroExtend32(OperandType.I64, m2);
+                }
+
+                res = EmitVectorInsert(context, res, emit(m1, m2), id + index, op.Size + 1);
+            }
+
+            context.Copy(GetVecA32(op.Qd), res);
+        }
+
         // Narrow
 
         public static void EmitVectorUnaryNarrowOp32(ArmEmitterContext context, Func1I emit, bool signed = false)
@@ -575,7 +717,7 @@ namespace ARMeilleure.Instructions
             if (targetSide == 1)
             {
                 return context.AddIntrinsic(Intrinsic.X86Movlhps, input, input); // Low to high.
-            } 
+            }
             else
             {
                 return context.AddIntrinsic(Intrinsic.X86Movhlps, input, input); // High to low.
@@ -592,7 +734,7 @@ namespace ARMeilleure.Instructions
             if (targetSide == 1)
             {
                 return context.AddIntrinsic(Intrinsic.X86Shufpd, target, value, Const(shuffleMask));
-            } 
+            }
             else
             {
                 return context.AddIntrinsic(Intrinsic.X86Shufpd, value, target, Const(shuffleMask));
@@ -622,7 +764,7 @@ namespace ARMeilleure.Instructions
                 if (Optimizations.UseSse41)
                 {
                     return context.AddIntrinsic(Intrinsic.X86Insertps, target, value, Const(index << 4));
-                } 
+                }
                 else
                 {
                     target = EmitSwapScalar(context, target, index, doubleWidth); // Swap value to replace into element 0.
@@ -642,7 +784,7 @@ namespace ARMeilleure.Instructions
             {
                 int shuffleMask = 1; // Swap top and bottom. (b0 = 1, b1 = 0)
                 return context.AddIntrinsic(Intrinsic.X86Shufpd, target, target, Const(shuffleMask));
-            } 
+            }
             else
             {
                 int shuffleMask = (3 << 6) | (2 << 4) | (1 << 2) | index; // Swap index and 0. (others remain)
@@ -765,6 +907,18 @@ namespace ARMeilleure.Instructions
             });
         }
 
+        public static void EmitVectorTernaryOpF32(ArmEmitterContext context, Intrinsic inst32)
+        {
+            OpCode32SimdReg op = (OpCode32SimdReg)context.CurrOp;
+
+            Debug.Assert((op.Size & 1) == 0);
+
+            EmitVectorTernaryOpSimd32(context, (d, n, m) =>
+            {
+                return context.AddIntrinsic(inst32, d, n, m);
+            });
+        }
+
         public static void EmitScalarUnaryOpSimd32(ArmEmitterContext context, Func1I scalarFunc)
         {
             OpCode32SimdS op = (OpCode32SimdS)context.CurrOp;
@@ -846,18 +1000,50 @@ namespace ARMeilleure.Instructions
             context.Copy(initialD, res);
         }
 
-        public static void EmitScalarTernaryOpF32(ArmEmitterContext context, Intrinsic inst32pt1, Intrinsic inst64pt1, Intrinsic inst32pt2, Intrinsic inst64pt2)
+        public static void EmitScalarTernaryOpF32(ArmEmitterContext context, Intrinsic inst32, Intrinsic inst64)
         {
             OpCode32SimdRegS op = (OpCode32SimdRegS)context.CurrOp;
 
             bool doubleSize = (op.Size & 1) != 0;
-            int shift = doubleSize ? 1 : 2;
+
+            Intrinsic inst = doubleSize ? inst64 : inst32;
+
+            EmitScalarTernaryOpSimd32(context, (d, n, m) =>
+            {
+                return context.AddIntrinsic(inst, d, n, m);
+            });
+        }
+
+        public static void EmitScalarTernaryOpF32(
+            ArmEmitterContext context,
+            Intrinsic inst32pt1,
+            Intrinsic inst64pt1,
+            Intrinsic inst32pt2,
+            Intrinsic inst64pt2,
+            bool isNegD = false)
+        {
+            OpCode32SimdRegS op = (OpCode32SimdRegS)context.CurrOp;
+
+            bool doubleSize = (op.Size & 1) != 0;
+
             Intrinsic inst1 = doubleSize ? inst64pt1 : inst32pt1;
             Intrinsic inst2 = doubleSize ? inst64pt2 : inst32pt2;
 
             EmitScalarTernaryOpSimd32(context, (d, n, m) =>
             {
                 Operand res = context.AddIntrinsic(inst1, n, m);
+
+                if (isNegD)
+                {
+                    Operand mask = doubleSize
+                        ? X86GetScalar(context, -0d)
+                        : X86GetScalar(context, -0f);
+
+                    d = doubleSize
+                        ? context.AddIntrinsic(Intrinsic.X86Xorpd, mask, d)
+                        : context.AddIntrinsic(Intrinsic.X86Xorps, mask, d);
+                }
+
                 return context.AddIntrinsic(inst2, d, res);
             });
         }
@@ -1000,52 +1186,22 @@ namespace ARMeilleure.Instructions
 
         // Generic Functions
 
-        public static Operand EmitSoftFloatCallDefaultFpscr(
-            ArmEmitterContext context,
-            _F32_F32_Bool f32,
-            _F64_F64_Bool f64,
-            params Operand[] callArgs)
+        public static Operand EmitSoftFloatCallDefaultFpscr(ArmEmitterContext context, string name, params Operand[] callArgs)
         {
             IOpCodeSimd op = (IOpCodeSimd)context.CurrOp;
 
-            Delegate dlg = (op.Size & 1) == 0 ? (Delegate)f32 : (Delegate)f64;
+            MethodInfo info = (op.Size & 1) == 0
+                ? typeof(SoftFloat32).GetMethod(name)
+                : typeof(SoftFloat64).GetMethod(name);
 
             Array.Resize(ref callArgs, callArgs.Length + 1);
             callArgs[callArgs.Length - 1] = Const(1);
 
-            return context.Call(dlg, callArgs);
-        }
+            context.StoreToContext();
+            Operand res = context.Call(info, callArgs);
+            context.LoadFromContext();
 
-        public static Operand EmitSoftFloatCallDefaultFpscr(
-            ArmEmitterContext context,
-            _F32_F32_F32_Bool f32,
-            _F64_F64_F64_Bool f64,
-            params Operand[] callArgs)
-        {
-            IOpCodeSimd op = (IOpCodeSimd)context.CurrOp;
-
-            Delegate dlg = (op.Size & 1) == 0 ? (Delegate)f32 : (Delegate)f64;
-
-            Array.Resize(ref callArgs, callArgs.Length + 1);
-            callArgs[callArgs.Length - 1] = Const(1);
-
-            return context.Call(dlg, callArgs);
-        }
-
-        public static Operand EmitSoftFloatCallDefaultFpscr(
-            ArmEmitterContext context,
-            _F32_F32_F32_F32_Bool f32,
-            _F64_F64_F64_F64_Bool f64,
-            params Operand[] callArgs)
-        {
-            IOpCodeSimd op = (IOpCodeSimd)context.CurrOp;
-
-            Delegate dlg = (op.Size & 1) == 0 ? (Delegate)f32 : (Delegate)f64;
-
-            Array.Resize(ref callArgs, callArgs.Length + 1);
-            callArgs[callArgs.Length - 1] = Const(1);
-
-            return context.Call(dlg, callArgs);
+            return res;
         }
 
         public static Operand EmitVectorExtractSx32(ArmEmitterContext context, int reg, int index, int size)
@@ -1062,7 +1218,7 @@ namespace ARMeilleure.Instructions
         {
             ThrowIfInvalid(index, size);
 
-            Operand res = null;
+            Operand res = default;
 
             switch (size)
             {
@@ -1101,6 +1257,28 @@ namespace ARMeilleure.Instructions
             }
 
             return res;
+        }
+
+        public static Operand EmitPolynomialMultiply(ArmEmitterContext context, Operand op1, Operand op2, int eSize)
+        {
+            Debug.Assert(eSize <= 32);
+
+            Operand result = eSize == 32 ? Const(0L) : Const(0);
+
+            if (eSize == 32)
+            {
+                op1 = context.ZeroExtend32(OperandType.I64, op1);
+                op2 = context.ZeroExtend32(OperandType.I64, op2);
+            }
+
+            for (int i = 0; i < eSize; i++)
+            {
+                Operand mask = context.BitwiseAnd(op1, Const(op1.Type, 1L << i));
+
+                result = context.BitwiseExclusiveOr(result, context.Multiply(op2, mask));
+            }
+
+            return result;
         }
     }
 }

@@ -2,9 +2,12 @@
 {
     class OpCode32SimdLong : OpCode32SimdBase
     {
-        public bool U { get; private set; }
+        public bool U { get; }
 
-        public OpCode32SimdLong(InstDescriptor inst, ulong address, int opCode) : base(inst, address, opCode)
+        public new static OpCode Create(InstDescriptor inst, ulong address, int opCode) => new OpCode32SimdLong(inst, address, opCode, false);
+        public static OpCode CreateT32(InstDescriptor inst, ulong address, int opCode) => new OpCode32SimdLong(inst, address, opCode, true);
+
+        public OpCode32SimdLong(InstDescriptor inst, ulong address, int opCode, bool isThumb) : base(inst, address, opCode, isThumb)
         {
             int imm3h = (opCode >> 19) & 0x7;
 
@@ -16,7 +19,7 @@
                 case 4: Size = 2; break;
             }
 
-            U = ((opCode >> 24) & 0x1) != 0;
+            U = ((opCode >> (isThumb ? 28 : 24)) & 0x1) != 0;
 
             RegisterSize = RegisterSize.Simd64;
 

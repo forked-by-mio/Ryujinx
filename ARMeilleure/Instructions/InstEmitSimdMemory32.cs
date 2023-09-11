@@ -5,7 +5,7 @@ using ARMeilleure.Translation;
 
 using static ARMeilleure.Instructions.InstEmitHelper;
 using static ARMeilleure.Instructions.InstEmitMemoryHelper;
-using static ARMeilleure.IntermediateRepresentation.OperandHelper;
+using static ARMeilleure.IntermediateRepresentation.Operand.Factory;
 
 namespace ARMeilleure.Instructions
 {
@@ -67,7 +67,7 @@ namespace ARMeilleure.Instructions
 
                 for (int i = 0; i < count; i++)
                 {
-                    // Write an element from a double simd register.
+                    // Accesses an element from a double simd register.
                     Operand address = context.Add(n, Const(offset));
                     if (eBytes == 8)
                     {
@@ -99,7 +99,7 @@ namespace ARMeilleure.Instructions
                                         EmitLoadSimd(context, address, GetVecA32(dreg >> 1), dreg >> 1, rIndex++, op.Size);
                                     }
                                 }
-                            } 
+                            }
                             else
                             {
                                 EmitLoadSimd(context, address, GetVecA32(d >> 1), d >> 1, index, op.Size);
@@ -120,17 +120,18 @@ namespace ARMeilleure.Instructions
                     {
                         Operand m = GetIntA32(context, op.Rm);
                         SetIntA32(context, op.Rn, context.Add(n, m));
-                    } 
+                    }
                     else
                     {
                         SetIntA32(context, op.Rn, context.Add(n, Const(count * eBytes)));
                     }
                 }
-            } 
+            }
             else
             {
                 OpCode32SimdMemPair op = (OpCode32SimdMemPair)context.CurrOp;
 
+                int increment = count > 1 ? op.Increment : 1;
                 int eBytes = 1 << op.Size;
 
                 Operand n = context.Copy(GetIntA32(context, op.Rn));
@@ -144,7 +145,7 @@ namespace ARMeilleure.Instructions
                         int elemD = d + reg;
                         for (int i = 0; i < count; i++)
                         {
-                            // Write an element from a double simd register
+                            // Accesses an element from a double simd register,
                             // add ebytes for each element.
                             Operand address = context.Add(n, Const(offset));
                             int index = ((elemD & 1) << (3 - op.Size)) + elem;
@@ -161,7 +162,6 @@ namespace ARMeilleure.Instructions
                             }
                             else
                             {
-                                
                                 if (load)
                                 {
                                     EmitLoadSimd(context, address, GetVecA32(elemD >> 1), elemD >> 1, index, op.Size);
@@ -173,7 +173,7 @@ namespace ARMeilleure.Instructions
                             }
 
                             offset += eBytes;
-                            elemD += op.Increment;
+                            elemD += increment;
                         }
                     }
                 }
@@ -213,7 +213,7 @@ namespace ARMeilleure.Instructions
             int sReg = (op.DoubleWidth) ? (op.Vd << 1) : op.Vd;
             int offset = 0;
             int byteSize = 4;
-            
+
             for (int num = 0; num < range; num++, sReg++)
             {
                 Operand address = context.Add(baseAddress, Const(offset));

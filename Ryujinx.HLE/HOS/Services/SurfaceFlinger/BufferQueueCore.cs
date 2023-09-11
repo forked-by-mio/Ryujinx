@@ -1,6 +1,6 @@
 ﻿using Ryujinx.Common.Logging;
-using Ryujinx.HLE.HOS.Kernel.Process;
 using Ryujinx.HLE.HOS.Kernel.Threading;
+using Ryujinx.HLE.HOS.Services.SurfaceFlinger.Types;
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -29,15 +29,25 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
         public bool                  ConsumerControlledByApp;
         public uint                  ConsumerUsageBits;
         public List<BufferItem>      Queue;
+        public BufferInfo[]          BufferHistory;
+        public uint                  BufferHistoryPosition;
+        public bool                  EnableExternalEvent;
+        public int                   MaxBufferCountCached;
 
         public readonly object Lock = new object();
 
         private KEvent _waitBufferFreeEvent;
         private KEvent _frameAvailableEvent;
 
-        public KProcess Owner { get; }
+        public ulong Owner { get; }
 
-        public BufferQueueCore(Switch device, KProcess process)
+        public bool Active { get; private set; }
+
+        public const int BufferHistoryArraySize = 8;
+
+        public event Action BufferQueued;
+
+        public BufferQueueCore(Switch device, ulong pid)
         {
             Slots                    = new BufferSlotArray();
             IsAbandoned              = false;
@@ -60,10 +70,16 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
 
             // TODO: CreateGraphicBufferAlloc?
 
-            _waitBufferFreeEvent  = new KEvent(device.System);
-            _frameAvailableEvent = new KEvent(device.System);
+            _waitBufferFreeEvent  = new KEvent(device.System.KernelContext);
+            _frameAvailableEvent = new KEvent(device.System.KernelContext);
 
-            Owner = process;
+            Owner = pid;
+
+            Active = true;
+
+            BufferHistory        = new BufferInfo[BufferHistoryArraySize];
+            EnableExternalEvent  = true;
+            MaxBufferCountCached = 0;
         }
 
         public int GetMinUndequeuedBufferCountLocked(bool async)
@@ -86,6 +102,14 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
             return GetMinUndequeuedBufferCountLocked(async);
         }
 
+        public void UpdateMaxBufferCountCachedLocked(int slot)
+        {
+            if (MaxBufferCountCached <= slot)
+            {
+                MaxBufferCountCached = slot + 1;
+            }
+        }
+
         public int GetMaxBufferCountLocked(bool async)
         {
             int minMaxBufferCount = GetMinMaxBufferCountLocked(async);
@@ -94,7 +118,7 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
 
             if (OverrideMaxBufferCount != 0)
             {
-                maxBufferCount = OverrideMaxBufferCount;
+                return OverrideMaxBufferCount;
             }
 
             // Preserve all buffers already in control of the producer and the consumer.
@@ -129,12 +153,28 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
 
         public void SignalWaitBufferFreeEvent()
         {
-            _waitBufferFreeEvent.WritableEvent.Signal();
+            if (EnableExternalEvent)
+            {
+                _waitBufferFreeEvent.WritableEvent.Signal();
+            }
         }
 
         public void SignalFrameAvailableEvent()
         {
-            _frameAvailableEvent.WritableEvent.Signal();
+            if (EnableExternalEvent)
+            {
+                _frameAvailableEvent.WritableEvent.Signal();
+            }
+        }
+
+        public void PrepareForExit()
+        {
+            lock (Lock)
+            {
+                Active = false;
+
+                Monitor.PulseAll(Lock);
+            }
         }
 
         // TODO: Find an accurate way to handle a regular condvar here as this will wake up unwanted threads in some edge cases.
@@ -145,17 +185,30 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
 
         public void WaitDequeueEvent()
         {
-            Monitor.Wait(Lock);
+            WaitForLock();
         }
 
-        public void SignalIsAbandonedEvent()
+        public void SignalIsAllocatingEvent()
         {
             Monitor.PulseAll(Lock);
         }
 
-        public void WaitIsAbandonedEvent()
+        public void WaitIsAllocatingEvent()
         {
-            Monitor.Wait(Lock);
+            WaitForLock();
+        }
+
+        public void SignalQueueEvent()
+        {
+            BufferQueued?.Invoke();
+        }
+
+        private void WaitForLock()
+        {
+            if (Active)
+            {
+                Monitor.Wait(Lock);
+            }
         }
 
         public void FreeBufferLocked(int slot)
@@ -187,20 +240,25 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
         {
             BufferSlot slot = Slots[item.Slot];
 
-            // TODO: Check this. On Android, this checks the "handle". I assume NvMapHandle is the handle, but it might not be. 
+            // TODO: Check this. On Android, this checks the "handle". I assume NvMapHandle is the handle, but it might not be.
             return !slot.GraphicBuffer.IsNull && slot.GraphicBuffer.Object.Buffer.Surfaces[0].NvMapHandle == item.GraphicBuffer.Object.Buffer.Surfaces[0].NvMapHandle;
         }
 
         public void WaitWhileAllocatingLocked()
         {
-            while (IsAbandoned)
+            while (IsAllocating)
             {
-                WaitIsAbandonedEvent();
+                WaitIsAllocatingEvent();
             }
         }
 
         public void CheckSystemEventsLocked(int maxBufferCount)
         {
+            if (!EnableExternalEvent)
+            {
+                return;
+            }
+
             bool needBufferReleaseSignal  = false;
             bool needFrameAvailableSignal = false;
 
@@ -260,7 +318,7 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
         {
             if (Slots[slot].BufferState != BufferState.Acquired)
             {
-                Logger.PrintError(LogClass.SurfaceFlinger, $"Slot {slot} is not owned by the consumer (state = {Slots[slot].BufferState})");
+                Logger.Error?.Print(LogClass.SurfaceFlinger, $"Slot {slot} is not owned by the consumer (state = {Slots[slot].BufferState})");
 
                 return false;
             }
@@ -272,7 +330,7 @@ namespace Ryujinx.HLE.HOS.Services.SurfaceFlinger
         {
             if (Slots[slot].BufferState != BufferState.Dequeued)
             {
-                Logger.PrintError(LogClass.SurfaceFlinger, $"Slot {slot} is not owned by the producer (state = {Slots[slot].BufferState})");
+                Logger.Error?.Print(LogClass.SurfaceFlinger, $"Slot {slot} is not owned by the producer (state = {Slots[slot].BufferState})");
 
                 return false;
             }

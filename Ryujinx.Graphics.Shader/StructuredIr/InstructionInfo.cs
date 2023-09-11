@@ -5,7 +5,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 {
     static class InstructionInfo
     {
-        private struct InstInfo
+        private readonly struct InstInfo
         {
             public VariableType DestType { get; }
 
@@ -49,6 +49,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             Add(Instruction.BitwiseOr,                VariableType.Int,    VariableType.Int,    VariableType.Int);
             Add(Instruction.BranchIfTrue,             VariableType.None,   VariableType.Bool);
             Add(Instruction.BranchIfFalse,            VariableType.None,   VariableType.Bool);
+            Add(Instruction.Call,                     VariableType.Scalar);
             Add(Instruction.Ceiling,                  VariableType.Scalar, VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.Clamp,                    VariableType.Scalar, VariableType.Scalar, VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.ClampU32,                 VariableType.U32,    VariableType.U32,    VariableType.U32,    VariableType.U32);
@@ -65,23 +66,29 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             Add(Instruction.ConditionalSelect,        VariableType.Scalar, VariableType.Bool,   VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.ConvertFP32ToFP64,        VariableType.F64,    VariableType.F32);
             Add(Instruction.ConvertFP64ToFP32,        VariableType.F32,    VariableType.F64);
-            Add(Instruction.ConvertFPToS32,           VariableType.S32,    VariableType.F32);
-            Add(Instruction.ConvertFPToU32,           VariableType.U32,    VariableType.F32);
-            Add(Instruction.ConvertS32ToFP,           VariableType.F32,    VariableType.S32);
-            Add(Instruction.ConvertU32ToFP,           VariableType.F32,    VariableType.U32);
+            Add(Instruction.ConvertFP32ToS32,         VariableType.S32,    VariableType.F32);
+            Add(Instruction.ConvertFP32ToU32,         VariableType.U32,    VariableType.F32);
+            Add(Instruction.ConvertFP64ToS32,         VariableType.S32,    VariableType.F64);
+            Add(Instruction.ConvertFP64ToU32,         VariableType.U32,    VariableType.F64);
+            Add(Instruction.ConvertS32ToFP32,         VariableType.F32,    VariableType.S32);
+            Add(Instruction.ConvertS32ToFP64,         VariableType.F64,    VariableType.S32);
+            Add(Instruction.ConvertU32ToFP32,         VariableType.F32,    VariableType.U32);
+            Add(Instruction.ConvertU32ToFP64,         VariableType.F64,    VariableType.U32);
             Add(Instruction.Cosine,                   VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.Ddx,                      VariableType.F32,    VariableType.F32);
             Add(Instruction.Ddy,                      VariableType.F32,    VariableType.F32);
             Add(Instruction.Divide,                   VariableType.Scalar, VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.ExponentB2,               VariableType.Scalar, VariableType.Scalar);
-            Add(Instruction.FindFirstSetS32,          VariableType.S32,    VariableType.S32);
-            Add(Instruction.FindFirstSetU32,          VariableType.S32,    VariableType.U32);
+            Add(Instruction.FindLSB,                  VariableType.Int,    VariableType.Int);
+            Add(Instruction.FindMSBS32,               VariableType.S32,    VariableType.S32);
+            Add(Instruction.FindMSBU32,               VariableType.S32,    VariableType.U32);
             Add(Instruction.Floor,                    VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.FusedMultiplyAdd,         VariableType.Scalar, VariableType.Scalar, VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.ImageLoad,                VariableType.F32);
             Add(Instruction.ImageStore,               VariableType.None);
-            Add(Instruction.IsNan,                    VariableType.Bool,   VariableType.F32);
-            Add(Instruction.LoadAttribute,            VariableType.F32,    VariableType.S32,    VariableType.S32);
+            Add(Instruction.ImageAtomic,              VariableType.S32);
+            Add(Instruction.IsNan,                    VariableType.Bool,   VariableType.Scalar);
+            Add(Instruction.LoadAttribute,            VariableType.F32,    VariableType.S32,    VariableType.S32,    VariableType.S32);
             Add(Instruction.LoadConstant,             VariableType.F32,    VariableType.S32,    VariableType.S32);
             Add(Instruction.LoadGlobal,               VariableType.U32,    VariableType.S32,    VariableType.S32);
             Add(Instruction.LoadLocal,                VariableType.U32,    VariableType.S32);
@@ -93,13 +100,6 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             Add(Instruction.LogicalExclusiveOr,       VariableType.Bool,   VariableType.Bool,   VariableType.Bool);
             Add(Instruction.LogicalNot,               VariableType.Bool,   VariableType.Bool);
             Add(Instruction.LogicalOr,                VariableType.Bool,   VariableType.Bool,   VariableType.Bool);
-            Add(Instruction.ShiftLeft,                VariableType.Int,    VariableType.Int,    VariableType.Int);
-            Add(Instruction.ShiftRightS32,            VariableType.S32,    VariableType.S32,    VariableType.Int);
-            Add(Instruction.ShiftRightU32,            VariableType.U32,    VariableType.U32,    VariableType.Int);
-            Add(Instruction.Shuffle,                  VariableType.F32,    VariableType.F32,    VariableType.U32,    VariableType.U32);
-            Add(Instruction.ShuffleDown,              VariableType.F32,    VariableType.F32,    VariableType.U32,    VariableType.U32);
-            Add(Instruction.ShuffleUp,                VariableType.F32,    VariableType.F32,    VariableType.U32,    VariableType.U32);
-            Add(Instruction.ShuffleXor,               VariableType.F32,    VariableType.F32,    VariableType.U32,    VariableType.U32);
             Add(Instruction.Maximum,                  VariableType.Scalar, VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.MaximumU32,               VariableType.U32,    VariableType.U32,    VariableType.U32);
             Add(Instruction.Minimum,                  VariableType.Scalar, VariableType.Scalar, VariableType.Scalar);
@@ -112,12 +112,24 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             Add(Instruction.PackHalf2x16,             VariableType.U32,    VariableType.F32,    VariableType.F32);
             Add(Instruction.ReciprocalSquareRoot,     VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.Round,                    VariableType.Scalar, VariableType.Scalar);
+            Add(Instruction.ShiftLeft,                VariableType.Int,    VariableType.Int,    VariableType.Int);
+            Add(Instruction.ShiftRightS32,            VariableType.S32,    VariableType.S32,    VariableType.Int);
+            Add(Instruction.ShiftRightU32,            VariableType.U32,    VariableType.U32,    VariableType.Int);
+            Add(Instruction.Shuffle,                  VariableType.F32,    VariableType.F32,    VariableType.U32,    VariableType.U32,    VariableType.Bool);
+            Add(Instruction.ShuffleDown,              VariableType.F32,    VariableType.F32,    VariableType.U32,    VariableType.U32,    VariableType.Bool);
+            Add(Instruction.ShuffleUp,                VariableType.F32,    VariableType.F32,    VariableType.U32,    VariableType.U32,    VariableType.Bool);
+            Add(Instruction.ShuffleXor,               VariableType.F32,    VariableType.F32,    VariableType.U32,    VariableType.U32,    VariableType.Bool);
             Add(Instruction.Sine,                     VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.SquareRoot,               VariableType.Scalar, VariableType.Scalar);
+            Add(Instruction.StoreAttribute,           VariableType.None,   VariableType.S32,    VariableType.S32,    VariableType.F32);
             Add(Instruction.StoreGlobal,              VariableType.None,   VariableType.S32,    VariableType.S32,    VariableType.U32);
             Add(Instruction.StoreLocal,               VariableType.None,   VariableType.S32,    VariableType.U32);
             Add(Instruction.StoreShared,              VariableType.None,   VariableType.S32,    VariableType.U32);
+            Add(Instruction.StoreShared16,            VariableType.None,   VariableType.S32,    VariableType.U32);
+            Add(Instruction.StoreShared8,             VariableType.None,   VariableType.S32,    VariableType.U32);
             Add(Instruction.StoreStorage,             VariableType.None,   VariableType.S32,    VariableType.S32,    VariableType.U32);
+            Add(Instruction.StoreStorage16,           VariableType.None,   VariableType.S32,    VariableType.S32,    VariableType.U32);
+            Add(Instruction.StoreStorage8,            VariableType.None,   VariableType.S32,    VariableType.S32,    VariableType.U32);
             Add(Instruction.Subtract,                 VariableType.Scalar, VariableType.Scalar, VariableType.Scalar);
             Add(Instruction.SwizzleAdd,               VariableType.F32,    VariableType.F32,    VariableType.F32,    VariableType.S32);
             Add(Instruction.TextureSample,            VariableType.F32);
@@ -144,12 +156,17 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         {
             // TODO: Return correct type depending on source index,
             // that can improve the decompiler output.
-            if (inst == Instruction.ImageLoad  ||
-                inst == Instruction.ImageStore ||
-                inst == Instruction.Lod        ||
+            if (inst == Instruction.ImageLoad   ||
+                inst == Instruction.ImageStore  ||
+                inst == Instruction.ImageAtomic ||
+                inst == Instruction.Lod         ||
                 inst == Instruction.TextureSample)
             {
                 return VariableType.F32;
+            }
+            else if (inst == Instruction.Call)
+            {
+                return VariableType.S32;
             }
 
             return GetFinalVarType(_infoTbl[(int)(inst & Instruction.Mask)].SrcTypes[index], inst);

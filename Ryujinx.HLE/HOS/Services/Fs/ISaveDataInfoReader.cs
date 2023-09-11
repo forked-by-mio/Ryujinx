@@ -1,31 +1,41 @@
 ﻿using LibHac;
+using LibHac.Common;
+using LibHac.Sf;
 
 namespace Ryujinx.HLE.HOS.Services.Fs
 {
-    class ISaveDataInfoReader : IpcService
+    class ISaveDataInfoReader : DisposableIpcService
     {
-        private LibHac.FsService.ISaveDataInfoReader _baseReader;
+        private SharedRef<LibHac.FsSrv.Sf.ISaveDataInfoReader> _baseReader;
 
-        public ISaveDataInfoReader(LibHac.FsService.ISaveDataInfoReader baseReader)
+        public ISaveDataInfoReader(ref SharedRef<LibHac.FsSrv.Sf.ISaveDataInfoReader> baseReader)
         {
-            _baseReader = baseReader;
+            _baseReader = SharedRef<LibHac.FsSrv.Sf.ISaveDataInfoReader>.CreateMove(ref baseReader);
         }
 
-        [Command(0)]
+        [CommandHipc(0)]
         // ReadSaveDataInfo() -> (u64, buffer<unknown, 6>)
         public ResultCode ReadSaveDataInfo(ServiceCtx context)
         {
-            long bufferPosition = context.Request.ReceiveBuff[0].Position;
-            long bufferLen      = context.Request.ReceiveBuff[0].Size;
+            ulong bufferAddress = context.Request.ReceiveBuff[0].Position;
+            ulong bufferLen = context.Request.ReceiveBuff[0].Size;
 
-            byte[] infoBuffer = new byte[bufferLen];
+            using (var region = context.Memory.GetWritableRegion(bufferAddress, (int)bufferLen, true))
+            {
+                Result result = _baseReader.Get.Read(out long readCount, new OutBuffer(region.Memory.Span));
 
-            Result result = _baseReader.ReadSaveDataInfo(out long readCount, infoBuffer);
+                context.ResponseData.Write(readCount);
 
-            context.Memory.WriteBytes(bufferPosition, infoBuffer);
-            context.ResponseData.Write(readCount);
+                return (ResultCode)result.Value;
+            }
+        }
 
-            return (ResultCode)result.Value;
+        protected override void Dispose(bool isDisposing)
+        {
+            if (isDisposing)
+            {
+                _baseReader.Destroy();
+            }
         }
     }
 }

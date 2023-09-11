@@ -24,6 +24,7 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         }
 
         public bool HasBranch => _branch != null;
+        public bool Reachable => Index == 0 || Predecessors.Count != 0;
 
         public List<BasicBlock> Predecessors { get; }
 
@@ -56,6 +57,35 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         public INode GetLastOp()
         {
             return Operations.Last?.Value;
+        }
+
+        public void Append(INode node)
+        {
+            INode lastOp = GetLastOp();
+
+            if (lastOp is Operation operation && IsControlFlowInst(operation.Inst))
+            {
+                Operations.AddBefore(Operations.Last, node);
+            }
+            else
+            {
+                Operations.AddLast(node);
+            }
+        }
+
+        private static bool IsControlFlowInst(Instruction inst)
+        {
+            switch (inst)
+            {
+                case Instruction.Branch:
+                case Instruction.BranchIfFalse:
+                case Instruction.BranchIfTrue:
+                case Instruction.Discard:
+                case Instruction.Return:
+                    return true;
+            }
+
+            return false;
         }
     }
 }

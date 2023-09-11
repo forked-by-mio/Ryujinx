@@ -7,36 +7,80 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 {
     static class StructuredProgram
     {
-        public static StructuredProgramInfo MakeStructuredProgram(BasicBlock[] blocks, ShaderConfig config)
+        public static StructuredProgramInfo MakeStructuredProgram(Function[] functions, ShaderConfig config)
         {
-            PhiFunctions.Remove(blocks);
+            StructuredProgramContext context = new StructuredProgramContext(config);
 
-            StructuredProgramContext context = new StructuredProgramContext(blocks.Length, config);
-
-            for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
+            for (int funcIndex = 0; funcIndex < functions.Length; funcIndex++)
             {
-                BasicBlock block = blocks[blkIndex];
+                Function function = functions[funcIndex];
 
-                context.EnterBlock(block);
+                BasicBlock[] blocks = function.Blocks;
 
-                foreach (INode node in block.Operations)
+                VariableType returnType = function.ReturnsValue ? VariableType.S32 : VariableType.None;
+
+                VariableType[] inArguments  = new VariableType[function.InArgumentsCount];
+                VariableType[] outArguments = new VariableType[function.OutArgumentsCount];
+
+                for (int i = 0; i < inArguments.Length; i++)
                 {
-                    Operation operation = (Operation)node;
+                    inArguments[i] = VariableType.S32;
+                }
 
-                    if (IsBranchInst(operation.Inst))
+                for (int i = 0; i < outArguments.Length; i++)
+                {
+                    outArguments[i] = VariableType.S32;
+                }
+
+                context.EnterFunction(blocks.Length, function.Name, returnType, inArguments, outArguments);
+
+                PhiFunctions.Remove(blocks);
+
+                for (int blkIndex = 0; blkIndex < blocks.Length; blkIndex++)
+                {
+                    BasicBlock block = blocks[blkIndex];
+
+                    context.EnterBlock(block);
+
+                    for (LinkedListNode<INode> opNode = block.Operations.First; opNode != null; opNode = opNode.Next)
                     {
-                        context.LeaveBlock(block, operation);
+                        Operation operation = (Operation)opNode.Value;
+
+                        if (IsBranchInst(operation.Inst))
+                        {
+                            context.LeaveBlock(block, operation);
+                        }
+                        else
+                        {
+                            AddOperation(context, operation);
+                        }
                     }
-                    else
+                }
+
+                GotoElimination.Eliminate(context.GetGotos());
+
+                AstOptimizer.Optimize(context);
+
+                context.LeaveFunction();
+            }
+
+            if (config.TransformFeedbackEnabled && config.LastInVertexPipeline)
+            {
+                for (int tfbIndex = 0; tfbIndex < 4; tfbIndex++)
+                {
+                    var locations = config.GpuAccessor.QueryTransformFeedbackVaryingLocations(tfbIndex);
+                    var stride = config.GpuAccessor.QueryTransformFeedbackStride(tfbIndex);
+
+                    for (int i = 0; i < locations.Length; i++)
                     {
-                        AddOperation(context, operation);
+                        byte location = locations[i];
+                        if (location < 0xc0)
+                        {
+                            context.Info.TransformFeedbackOutputs[location] = new TransformFeedbackOutput(tfbIndex, i * 4, stride);
+                        }
                     }
                 }
             }
-
-            GotoElimination.Eliminate(context.GetGotos());
-
-            AstOptimizer.Optimize(context);
 
             return context.Info;
         }
@@ -45,11 +89,43 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         {
             Instruction inst = operation.Inst;
 
-            IAstNode[] sources = new IAstNode[operation.SourcesCount];
+            if (inst == Instruction.LoadAttribute)
+            {
+                Operand src1 = operation.GetSource(0);
+                Operand src2 = operation.GetSource(1);
 
-            for (int index = 0; index < sources.Length; index++)
+                if (src1.Type == OperandType.Constant && src2.Type == OperandType.Constant)
+                {
+                    int attrOffset = (src1.Value & AttributeConsts.Mask) + (src2.Value << 2);
+
+                    if ((src1.Value & AttributeConsts.LoadOutputMask) != 0)
+                    {
+                        context.Info.Outputs.Add(attrOffset);
+                    }
+                    else
+                    {
+                        context.Info.Inputs.Add(attrOffset);
+                    }
+                }
+            }
+
+            int sourcesCount = operation.SourcesCount;
+            int outDestsCount = operation.DestsCount != 0 ? operation.DestsCount - 1 : 0;
+
+            IAstNode[] sources = new IAstNode[sourcesCount + outDestsCount];
+
+            for (int index = 0; index < operation.SourcesCount; index++)
             {
                 sources[index] = context.GetOperandUse(operation.GetSource(index));
+            }
+
+            for (int index = 0; index < outDestsCount; index++)
+            {
+                AstOperand oper = context.GetOperandDef(operation.GetDest(1 + index));
+
+                oper.VarType = InstructionInfo.GetSrcVarType(inst, sourcesCount + index);
+
+                sources[sourcesCount + index] = oper;
             }
 
             AstTextureOperation GetAstTextureOperation(TextureOperation texOp)
@@ -59,8 +135,8 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                     texOp.Type,
                     texOp.Format,
                     texOp.Flags,
+                    texOp.CbufSlot,
                     texOp.Handle,
-                    4, // TODO: Non-hardcoded array size.
                     texOp.Index,
                     sources);
             }
@@ -68,24 +144,6 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             if (operation.Dest != null)
             {
                 AstOperand dest = context.GetOperandDef(operation.Dest);
-
-                if (inst == Instruction.LoadConstant)
-                {
-                    Operand slot = operation.GetSource(0);
-
-                    if (slot.Type != OperandType.Constant)
-                    {
-                        throw new InvalidOperationException("Found load with non-constant constant buffer slot.");
-                    }
-
-                    context.Info.CBuffers.Add(slot.Value);
-                }
-                else if (UsesStorage(inst))
-                {
-                    AddSBufferUse(context.Info.SBuffers, operation);
-                }
-
-                AstAssignment assignment;
 
                 // If all the sources are bool, it's better to use short-circuiting
                 // logical operations, rather than forcing a cast to int and doing
@@ -119,36 +177,23 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
                 if (operation is TextureOperation texOp)
                 {
-                    if (texOp.Inst == Instruction.ImageLoad || texOp.Inst == Instruction.ImageStore)
+                    if (texOp.Inst == Instruction.ImageLoad)
                     {
                         dest.VarType = texOp.Format.GetComponentType();
                     }
 
-                    AstTextureOperation astTexOp = GetAstTextureOperation(texOp);
-
-                    if (texOp.Inst == Instruction.ImageLoad)
-                    {
-                        context.Info.Images.Add(astTexOp);
-                    }
-                    else
-                    {
-                        context.Info.Samplers.Add(astTexOp);
-                    }
-
-                    source = astTexOp;
+                    source = GetAstTextureOperation(texOp);
                 }
                 else if (!isCopy)
                 {
-                    source = new AstOperation(inst, operation.Index, sources);
+                    source = new AstOperation(inst, operation.Index, sources, operation.SourcesCount);
                 }
                 else
                 {
                     source = sources[0];
                 }
 
-                assignment = new AstAssignment(dest, source);
-
-                context.AddNode(assignment);
+                context.AddNode(new AstAssignment(dest, source));
             }
             else if (operation.Inst == Instruction.Comment)
             {
@@ -158,18 +203,11 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             {
                 AstTextureOperation astTexOp = GetAstTextureOperation(texOp);
 
-                context.Info.Images.Add(astTexOp);
-
                 context.AddNode(astTexOp);
             }
             else
             {
-                if (UsesStorage(inst))
-                {
-                    AddSBufferUse(context.Info.SBuffers, operation);
-                }
-
-                context.AddNode(new AstOperation(inst, operation.Index, sources));
+                context.AddNode(new AstOperation(inst, operation.Index, sources, operation.SourcesCount));
             }
 
             // Those instructions needs to be emulated by using helper functions,
@@ -177,6 +215,43 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             // decide which helper functions are needed on the final generated code.
             switch (operation.Inst)
             {
+                case Instruction.AtomicMaxS32 | Instruction.MrShared:
+                case Instruction.AtomicMinS32 | Instruction.MrShared:
+                    context.Info.HelperFunctionsMask |= HelperFunctionsMask.AtomicMinMaxS32Shared;
+                    break;
+                case Instruction.AtomicMaxS32 | Instruction.MrStorage:
+                case Instruction.AtomicMinS32 | Instruction.MrStorage:
+                    context.Info.HelperFunctionsMask |= HelperFunctionsMask.AtomicMinMaxS32Storage;
+                    break;
+                case Instruction.AtomicAdd | Instruction.MrGlobal:
+                case Instruction.AtomicAnd | Instruction.MrGlobal:
+                case Instruction.AtomicCompareAndSwap | Instruction.MrGlobal:
+                case Instruction.AtomicMaxS32 | Instruction.MrGlobal:
+                case Instruction.AtomicMaxU32 | Instruction.MrGlobal:
+                case Instruction.AtomicMinS32 | Instruction.MrGlobal:
+                case Instruction.AtomicMinU32 | Instruction.MrGlobal:
+                case Instruction.AtomicOr | Instruction.MrGlobal:
+                case Instruction.AtomicSwap | Instruction.MrGlobal:
+                case Instruction.AtomicXor | Instruction.MrGlobal:
+                    context.Config.SetUsedFeature(FeatureFlags.GlobalMemory);
+                    context.Config.SetUsedFeature(FeatureFlags.GlobalMemoryWrite);
+                    context.Info.HelperFunctionsMask |= HelperFunctionsMask.GlobalMemory;
+                    break;
+                case Instruction.LoadGlobal:
+                case Instruction.StoreGlobal:
+                case Instruction.StoreGlobal16:
+                case Instruction.StoreGlobal8:
+                    context.Config.SetUsedFeature(FeatureFlags.GlobalMemory);
+
+                    if (operation.Inst == Instruction.StoreGlobal ||
+                        operation.Inst == Instruction.StoreGlobal16 ||
+                        operation.Inst == Instruction.StoreGlobal8)
+                    {
+                        context.Config.SetUsedFeature(FeatureFlags.GlobalMemoryWrite);
+                    }
+
+                    context.Info.HelperFunctionsMask |= HelperFunctionsMask.GlobalMemory;
+                    break;
                 case Instruction.MultiplyHighS32:
                     context.Info.HelperFunctionsMask |= HelperFunctionsMask.MultiplyHighS32;
                     break;
@@ -195,29 +270,21 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 case Instruction.ShuffleXor:
                     context.Info.HelperFunctionsMask |= HelperFunctionsMask.ShuffleXor;
                     break;
+                case Instruction.StoreShared16:
+                case Instruction.StoreShared8:
+                    context.Info.HelperFunctionsMask |= HelperFunctionsMask.StoreSharedSmallInt;
+                    break;
+                case Instruction.StoreStorage16:
+                case Instruction.StoreStorage8:
+                    context.Info.HelperFunctionsMask |= HelperFunctionsMask.StoreStorageSmallInt;
+                    break;
                 case Instruction.SwizzleAdd:
                     context.Info.HelperFunctionsMask |= HelperFunctionsMask.SwizzleAdd;
                     break;
-            }
-        }
-
-        private static void AddSBufferUse(HashSet<int> sBuffers, Operation operation)
-        {
-            Operand slot = operation.GetSource(0);
-
-            if (slot.Type == OperandType.Constant)
-            {
-                sBuffers.Add(slot.Value);
-            }
-            else
-            {
-                // If the value is not constant, then we don't know
-                // how many storage buffers are used, so we assume
-                // all of them are used.
-                for (int index = 0; index < GlobalMemory.StorageMaxCount; index++)
-                {
-                    sBuffers.Add(index);
-                }
+                case Instruction.FSIBegin:
+                case Instruction.FSIEnd:
+                    context.Info.HelperFunctionsMask |= HelperFunctionsMask.FSI;
+                    break;
             }
         }
 
@@ -245,7 +312,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             {
                 foreach (INode useNode in operand.UseOps)
                 {
-                    if (!(useNode is Operation operation))
+                    if (useNode is not Operation operation)
                     {
                         continue;
                     }
@@ -284,7 +351,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         {
             foreach (IAstNode node in sources)
             {
-                if (!(node is AstOperand operand))
+                if (node is not AstOperand operand)
                 {
                     return false;
                 }
@@ -300,52 +367,37 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
         private static bool IsBranchInst(Instruction inst)
         {
-            switch (inst)
+            return inst switch
             {
-                case Instruction.Branch:
-                case Instruction.BranchIfFalse:
-                case Instruction.BranchIfTrue:
-                    return true;
-            }
-
-            return false;
+                Instruction.Branch or
+                Instruction.BranchIfFalse or
+                Instruction.BranchIfTrue => true,
+                _ => false
+            };
         }
 
         private static bool IsBitwiseInst(Instruction inst)
         {
-            switch (inst)
+            return inst switch
             {
-                case Instruction.BitwiseAnd:
-                case Instruction.BitwiseExclusiveOr:
-                case Instruction.BitwiseNot:
-                case Instruction.BitwiseOr:
-                    return true;
-            }
-
-            return false;
+                Instruction.BitwiseAnd or
+                Instruction.BitwiseExclusiveOr or
+                Instruction.BitwiseNot or
+                Instruction.BitwiseOr => true,
+                _ => false
+            };
         }
 
         private static Instruction GetLogicalFromBitwiseInst(Instruction inst)
         {
-            switch (inst)
+            return inst switch
             {
-                case Instruction.BitwiseAnd:         return Instruction.LogicalAnd;
-                case Instruction.BitwiseExclusiveOr: return Instruction.LogicalExclusiveOr;
-                case Instruction.BitwiseNot:         return Instruction.LogicalNot;
-                case Instruction.BitwiseOr:          return Instruction.LogicalOr;
-            }
-
-            throw new ArgumentException($"Unexpected instruction \"{inst}\".");
-        }
-
-        private static bool UsesStorage(Instruction inst)
-        {
-            if (inst == Instruction.LoadStorage || inst == Instruction.StoreStorage)
-            {
-                return true;
-            }
-
-            return inst.IsAtomic() && (inst & Instruction.MrMask) == Instruction.MrStorage;
+                Instruction.BitwiseAnd => Instruction.LogicalAnd,
+                Instruction.BitwiseExclusiveOr => Instruction.LogicalExclusiveOr,
+                Instruction.BitwiseNot => Instruction.LogicalNot,
+                Instruction.BitwiseOr => Instruction.LogicalOr,
+                _ => throw new ArgumentException($"Unexpected instruction \"{inst}\".")
+            };
         }
     }
 }

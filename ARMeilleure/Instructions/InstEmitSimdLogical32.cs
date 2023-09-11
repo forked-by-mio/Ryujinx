@@ -5,7 +5,7 @@ using ARMeilleure.Translation;
 using static ARMeilleure.Instructions.InstEmitHelper;
 using static ARMeilleure.Instructions.InstEmitSimdHelper;
 using static ARMeilleure.Instructions.InstEmitSimdHelper32;
-using static ARMeilleure.IntermediateRepresentation.OperandHelper;
+using static ARMeilleure.IntermediateRepresentation.Operand.Factory;
 
 namespace ARMeilleure.Instructions
 {
@@ -15,12 +15,60 @@ namespace ARMeilleure.Instructions
         {
             if (Optimizations.UseSse2)
             {
-                EmitVectorBinaryOpF32(context, Intrinsic.X86Pand, Intrinsic.X86Pand);
+                EmitVectorBinaryOpSimd32(context, (n, m) => context.AddIntrinsic(Intrinsic.X86Pand, n, m));
             }
             else
             {
                 EmitVectorBinaryOpZx32(context, (op1, op2) => context.BitwiseAnd(op1, op2));
             }
+        }
+
+        public static void Vbic_I(ArmEmitterContext context)
+        {
+            if (Optimizations.UseSse2)
+            {
+                EmitVectorBinaryOpSimd32(context, (n, m) => context.AddIntrinsic(Intrinsic.X86Pandn, m, n));
+            }
+            else
+            {
+                EmitVectorBinaryOpZx32(context, (op1, op2) => context.BitwiseAnd(op1, context.BitwiseNot(op2)));
+            }
+        }
+
+        public static void Vbic_II(ArmEmitterContext context)
+        {
+            OpCode32SimdImm op = (OpCode32SimdImm)context.CurrOp;
+
+            long immediate = op.Immediate;
+
+            // Replicate fields to fill the 64-bits, if size is < 64-bits.
+            switch (op.Size)
+            {
+                case 0: immediate *= 0x0101010101010101L; break;
+                case 1: immediate *= 0x0001000100010001L; break;
+                case 2: immediate *= 0x0000000100000001L; break;
+            }
+
+            Operand imm = Const(immediate);
+            Operand res = GetVecA32(op.Qd);
+
+            if (op.Q)
+            {
+                for (int elem = 0; elem < 2; elem++)
+                {
+                    Operand de = EmitVectorExtractZx(context, op.Qd, elem, 3);
+
+                    res = EmitVectorInsert(context, res, context.BitwiseAnd(de, context.BitwiseNot(imm)), elem, 3);
+                }
+            }
+            else
+            {
+                Operand de = EmitVectorExtractZx(context, op.Qd, op.Vd & 1, 3);
+
+                res = EmitVectorInsert(context, res, context.BitwiseAnd(de, context.BitwiseNot(imm)), op.Vd & 1, 3);
+            }
+
+            context.Copy(GetVecA32(op.Qd), res);
         }
 
         public static void Vbif(ArmEmitterContext context)
@@ -59,7 +107,7 @@ namespace ARMeilleure.Instructions
         {
             if (Optimizations.UseSse2)
             {
-                EmitVectorBinaryOpF32(context, Intrinsic.X86Pxor, Intrinsic.X86Pxor);
+                EmitVectorBinaryOpSimd32(context, (n, m) => context.AddIntrinsic(Intrinsic.X86Pxor, n, m));
             }
             else
             {
@@ -67,11 +115,29 @@ namespace ARMeilleure.Instructions
             }
         }
 
+        public static void Vorn_I(ArmEmitterContext context)
+        {
+            if (Optimizations.UseSse2)
+            {
+                Operand mask = context.VectorOne();
+
+                EmitVectorBinaryOpSimd32(context, (n, m) =>
+                {
+                    m = context.AddIntrinsic(Intrinsic.X86Pandn, m, mask);
+                    return context.AddIntrinsic(Intrinsic.X86Por, n, m);
+                });
+            }
+            else
+            {
+                EmitVectorBinaryOpZx32(context, (op1, op2) => context.BitwiseOr(op1, context.BitwiseNot(op2)));
+            }
+        }
+
         public static void Vorr_I(ArmEmitterContext context)
         {
             if (Optimizations.UseSse2)
             {
-                EmitVectorBinaryOpF32(context, Intrinsic.X86Por, Intrinsic.X86Por);
+                EmitVectorBinaryOpSimd32(context, (n, m) => context.AddIntrinsic(Intrinsic.X86Por, n, m));
             }
             else
             {
@@ -113,6 +179,15 @@ namespace ARMeilleure.Instructions
             }
 
             context.Copy(GetVecA32(op.Qd), res);
+        }
+
+        public static void Vtst(ArmEmitterContext context)
+        {
+            EmitVectorBinaryOpZx32(context, (op1, op2) =>
+            {
+                Operand isZero = context.ICompareEqual(context.BitwiseAnd(op1, op2), Const(0));
+                return context.ConditionalSelect(isZero, Const(0), Const(-1));
+            });
         }
 
         private static void EmitBifBit(ArmEmitterContext context, bool notRm)

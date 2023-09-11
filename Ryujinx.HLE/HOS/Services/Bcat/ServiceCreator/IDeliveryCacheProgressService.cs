@@ -1,40 +1,43 @@
-﻿using Ryujinx.Common;
-using Ryujinx.Common.Logging;
+﻿using Ryujinx.Common.Logging;
+using Ryujinx.Cpu;
 using Ryujinx.HLE.HOS.Ipc;
 using Ryujinx.HLE.HOS.Kernel.Common;
 using Ryujinx.HLE.HOS.Kernel.Threading;
 using Ryujinx.HLE.HOS.Services.Bcat.ServiceCreator.Types;
 using System;
-using System.IO;
 
 namespace Ryujinx.HLE.HOS.Services.Bcat.ServiceCreator
 {
     class IDeliveryCacheProgressService : IpcService
     {
         private KEvent _event;
+        private int    _eventHandle;
 
         public IDeliveryCacheProgressService(ServiceCtx context)
         {
-            _event = new KEvent(context.Device.System);
+            _event = new KEvent(context.Device.System.KernelContext);
         }
 
-        [Command(0)]
+        [CommandHipc(0)]
         // GetEvent() -> handle<copy>
         public ResultCode GetEvent(ServiceCtx context)
         {
-            if (context.Process.HandleTable.GenerateHandle(_event.ReadableEvent, out int handle) != KernelResult.Success)
+            if (_eventHandle == 0)
             {
-                throw new InvalidOperationException("Out of handles!");
+                if (context.Process.HandleTable.GenerateHandle(_event.ReadableEvent, out _eventHandle) != KernelResult.Success)
+                {
+                    throw new InvalidOperationException("Out of handles!");
+                }
             }
 
-            context.Response.HandleDesc = IpcHandleDesc.MakeMove(handle);
+            context.Response.HandleDesc = IpcHandleDesc.MakeCopy(_eventHandle);
 
-            Logger.PrintStub(LogClass.ServiceBcat);
+            Logger.Stub?.PrintStub(LogClass.ServiceBcat);
 
             return ResultCode.Success;
         }
 
-        [Command(1)]
+        [CommandHipc(1)]
         // GetImpl() -> buffer<nn::bcat::detail::DeliveryCacheProgressImpl, 0x1a>
         public ResultCode GetImpl(ServiceCtx context)
         {
@@ -44,21 +47,17 @@ namespace Ryujinx.HLE.HOS.Services.Bcat.ServiceCreator
                 Result = 0
             };
 
-            WriteDeliveryCacheProgressImpl(context, context.Request.RecvListBuff[0], deliveryCacheProgress);
+            ulong dcpSize = WriteDeliveryCacheProgressImpl(context, context.Request.RecvListBuff[0], deliveryCacheProgress);
+            context.Response.PtrBuff[0] = context.Response.PtrBuff[0].WithSize(dcpSize);
 
-            Logger.PrintStub(LogClass.ServiceBcat);
+            Logger.Stub?.PrintStub(LogClass.ServiceBcat);
 
             return ResultCode.Success;
         }
 
-        private void WriteDeliveryCacheProgressImpl(ServiceCtx context, IpcRecvListBuffDesc ipcDesc, DeliveryCacheProgressImpl deliveryCacheProgress)
+        private ulong WriteDeliveryCacheProgressImpl(ServiceCtx context, IpcRecvListBuffDesc ipcDesc, DeliveryCacheProgressImpl deliveryCacheProgress)
         {
-            using (MemoryStream memory = new MemoryStream((int)ipcDesc.Size))
-            using (BinaryWriter bufferWriter = new BinaryWriter(memory))
-            {
-                bufferWriter.WriteStruct(deliveryCacheProgress);
-                context.Memory.WriteBytes(ipcDesc.Position, memory.ToArray());
-            }
+            return MemoryHelper.Write(context.Memory, ipcDesc.Position, deliveryCacheProgress);
         }
     }
 }

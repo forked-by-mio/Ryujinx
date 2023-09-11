@@ -1,54 +1,89 @@
 using Ryujinx.Common;
-using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using Ryujinx.Graphics.Shader.StructuredIr;
 using Ryujinx.Graphics.Shader.Translation;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 
 namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
 {
     static class Declarations
     {
-        // At least 16 attributes are guaranteed by the spec.
-        public const int MaxAttributes = 16;
-
         public static void Declare(CodeGenContext context, StructuredProgramInfo info)
         {
-            context.AppendLine("#version 430 core");
+            context.AppendLine(context.Config.Options.TargetApi == TargetApi.Vulkan ? "#version 460 core" : "#version 450 core");
             context.AppendLine("#extension GL_ARB_gpu_shader_int64 : enable");
-            context.AppendLine("#extension GL_ARB_shader_ballot : enable");
+
+            if (context.Config.GpuAccessor.QueryHostSupportsShaderBallot())
+            {
+                context.AppendLine("#extension GL_ARB_shader_ballot : enable");
+            }
+            else
+            {
+                context.AppendLine("#extension GL_KHR_shader_subgroup_basic : enable");
+                context.AppendLine("#extension GL_KHR_shader_subgroup_ballot : enable");
+            }
+
             context.AppendLine("#extension GL_ARB_shader_group_vote : enable");
+            context.AppendLine("#extension GL_EXT_shader_image_load_formatted : enable");
+            context.AppendLine("#extension GL_EXT_texture_shadow_lod : enable");
 
             if (context.Config.Stage == ShaderStage.Compute)
             {
                 context.AppendLine("#extension GL_ARB_compute_shader : enable");
             }
+            else if (context.Config.Stage == ShaderStage.Fragment)
+            {
+                if (context.Config.GpuAccessor.QueryHostSupportsFragmentShaderInterlock())
+                {
+                    context.AppendLine("#extension GL_ARB_fragment_shader_interlock : enable");
+                }
+                else if (context.Config.GpuAccessor.QueryHostSupportsFragmentShaderOrderingIntel())
+                {
+                    context.AppendLine("#extension GL_INTEL_fragment_shader_ordering : enable");
+                }
+            }
+            else
+            {
+                if (context.Config.Stage == ShaderStage.Vertex)
+                {
+                    context.AppendLine("#extension GL_ARB_shader_draw_parameters : enable");
+                }
+
+                context.AppendLine("#extension GL_ARB_shader_viewport_layer_array : enable");
+            }
+
+            if (context.Config.GpPassthrough && context.Config.GpuAccessor.QueryHostSupportsGeometryShaderPassthrough())
+            {
+                context.AppendLine("#extension GL_NV_geometry_shader_passthrough : enable");
+            }
+
+            if ((info.HelperFunctionsMask & HelperFunctionsMask.GlobalMemory) != 0)
+            {
+                context.AppendLine("#extension GL_EXT_shader_16bit_storage : enable");
+                context.AppendLine("#extension GL_EXT_shader_8bit_storage : enable");
+
+                if (context.Config.Options.TargetApi == TargetApi.Vulkan)
+                {
+                    context.AppendLine("#extension GL_EXT_buffer_reference : enable");
+                    context.AppendLine("#extension GL_EXT_buffer_reference_uvec2 : enable");
+                }
+                else
+                {
+                    context.AppendLine("#extension GL_NV_shader_buffer_load : enable");
+                }
+            }
 
             context.AppendLine("#pragma optionNV(fastmath off)");
-
             context.AppendLine();
 
             context.AppendLine($"const int {DefaultNames.UndefinedName} = 0;");
             context.AppendLine();
 
-            if (context.Config.Stage == ShaderStage.Geometry)
-            {
-                string inPrimitive = ((InputTopology)context.Config.QueryInfo(QueryInfoName.PrimitiveTopology)).ToGlslString();
-
-                context.AppendLine($"layout ({inPrimitive}) in;");
-
-                string outPrimitive = context.Config.OutputTopology.ToGlslString();
-
-                int maxOutputVertices = context.Config.MaxOutputVertices;
-
-                context.AppendLine($"layout ({outPrimitive}, max_vertices = {maxOutputVertices}) out;");
-                context.AppendLine();
-            }
-
             if (context.Config.Stage == ShaderStage.Compute)
             {
-                int localMemorySize = BitUtils.DivRoundUp(context.Config.QueryInfo(QueryInfoName.ComputeLocalMemorySize), 4);
+                int localMemorySize = BitUtils.DivRoundUp(context.Config.GpuAccessor.QueryComputeLocalMemorySize(), 4);
 
                 if (localMemorySize != 0)
                 {
@@ -58,7 +93,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
                     context.AppendLine();
                 }
 
-                int sharedMemorySize = BitUtils.DivRoundUp(context.Config.QueryInfo(QueryInfoName.ComputeSharedMemorySize), 4);
+                int sharedMemorySize = BitUtils.DivRoundUp(context.Config.GpuAccessor.QueryComputeSharedMemorySize(), 4);
 
                 if (sharedMemorySize != 0)
                 {
@@ -78,55 +113,139 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
                 context.AppendLine();
             }
 
-            if (info.CBuffers.Count != 0)
+            var cBufferDescriptors = context.Config.GetConstantBufferDescriptors();
+            if (cBufferDescriptors.Length != 0)
             {
-                DeclareUniforms(context, info);
+                DeclareUniforms(context, cBufferDescriptors);
 
                 context.AppendLine();
             }
 
-            if (info.SBuffers.Count != 0)
+            var sBufferDescriptors = context.Config.GetStorageBufferDescriptors();
+            if (sBufferDescriptors.Length != 0)
             {
-                DeclareStorages(context, info);
+                DeclareStorages(context, sBufferDescriptors);
 
                 context.AppendLine();
             }
 
-            if (info.Samplers.Count != 0)
+            var textureDescriptors = context.Config.GetTextureDescriptors();
+            if (textureDescriptors.Length != 0)
             {
-                DeclareSamplers(context, info);
+                DeclareSamplers(context, textureDescriptors);
 
                 context.AppendLine();
             }
 
-            if (info.Images.Count != 0)
+            var imageDescriptors = context.Config.GetImageDescriptors();
+            if (imageDescriptors.Length != 0)
             {
-                DeclareImages(context, info);
+                DeclareImages(context, imageDescriptors);
 
                 context.AppendLine();
             }
 
             if (context.Config.Stage != ShaderStage.Compute)
             {
-                if (info.IAttributes.Count != 0)
+                if (context.Config.Stage == ShaderStage.Geometry)
+                {
+                    InputTopology inputTopology = context.Config.GpuAccessor.QueryPrimitiveTopology();
+                    string inPrimitive = inputTopology.ToGlslString();
+
+                    context.AppendLine($"layout (invocations = {context.Config.ThreadsPerInputPrimitive}, {inPrimitive}) in;");
+
+                    if (context.Config.GpPassthrough && context.Config.GpuAccessor.QueryHostSupportsGeometryShaderPassthrough())
+                    {
+                        context.AppendLine($"layout (passthrough) in gl_PerVertex");
+                        context.EnterScope();
+                        context.AppendLine("vec4 gl_Position;");
+                        context.AppendLine("float gl_PointSize;");
+                        context.AppendLine("float gl_ClipDistance[];");
+                        context.LeaveScope(";");
+                    }
+                    else
+                    {
+                        string outPrimitive = context.Config.OutputTopology.ToGlslString();
+
+                        int maxOutputVertices = context.Config.GpPassthrough
+                            ? inputTopology.ToInputVertices()
+                            : context.Config.MaxOutputVertices;
+
+                        context.AppendLine($"layout ({outPrimitive}, max_vertices = {maxOutputVertices}) out;");
+                    }
+
+                    context.AppendLine();
+                }
+                else if (context.Config.Stage == ShaderStage.TessellationControl)
+                {
+                    int threadsPerInputPrimitive = context.Config.ThreadsPerInputPrimitive;
+
+                    context.AppendLine($"layout (vertices = {threadsPerInputPrimitive}) out;");
+                    context.AppendLine();
+                }
+                else if (context.Config.Stage == ShaderStage.TessellationEvaluation)
+                {
+                    bool tessCw = context.Config.GpuAccessor.QueryTessCw();
+
+                    if (context.Config.Options.TargetApi == TargetApi.Vulkan)
+                    {
+                        // We invert the front face on Vulkan backend, so we need to do that here aswell.
+                        tessCw = !tessCw;
+                    }
+
+                    string patchType = context.Config.GpuAccessor.QueryTessPatchType().ToGlsl();
+                    string spacing = context.Config.GpuAccessor.QueryTessSpacing().ToGlsl();
+                    string windingOrder = tessCw ? "cw" : "ccw";
+
+                    context.AppendLine($"layout ({patchType}, {spacing}, {windingOrder}) in;");
+                    context.AppendLine();
+                }
+
+                if (context.Config.UsedInputAttributes != 0 || context.Config.GpPassthrough)
                 {
                     DeclareInputAttributes(context, info);
 
                     context.AppendLine();
                 }
 
-                if (info.OAttributes.Count != 0 || context.Config.Stage != ShaderStage.Fragment)
+                if (context.Config.UsedOutputAttributes != 0 || context.Config.Stage != ShaderStage.Fragment)
                 {
                     DeclareOutputAttributes(context, info);
 
                     context.AppendLine();
                 }
+
+                if (context.Config.UsedInputAttributesPerPatch.Count != 0)
+                {
+                    DeclareInputAttributesPerPatch(context, context.Config.UsedInputAttributesPerPatch);
+
+                    context.AppendLine();
+                }
+
+                if (context.Config.UsedOutputAttributesPerPatch.Count != 0)
+                {
+                    DeclareUsedOutputAttributesPerPatch(context, context.Config.UsedOutputAttributesPerPatch);
+
+                    context.AppendLine();
+                }
+
+                if (context.Config.TransformFeedbackEnabled && context.Config.LastInVertexPipeline)
+                {
+                    var tfOutput = context.Info.GetTransformFeedbackOutput(AttributeConsts.PositionX);
+                    if (tfOutput.Valid)
+                    {
+                        context.AppendLine($"layout (xfb_buffer = {tfOutput.Buffer}, xfb_offset = {tfOutput.Offset}, xfb_stride = {tfOutput.Stride}) out gl_PerVertex");
+                        context.EnterScope();
+                        context.AppendLine("vec4 gl_Position;");
+                        context.LeaveScope(context.Config.Stage == ShaderStage.TessellationControl ? " gl_out[];" : ";");
+                    }
+                }
             }
             else
             {
-                string localSizeX = NumberFormatter.FormatInt(context.Config.QueryInfo(QueryInfoName.ComputeLocalSizeX));
-                string localSizeY = NumberFormatter.FormatInt(context.Config.QueryInfo(QueryInfoName.ComputeLocalSizeY));
-                string localSizeZ = NumberFormatter.FormatInt(context.Config.QueryInfo(QueryInfoName.ComputeLocalSizeZ));
+                string localSizeX = NumberFormatter.FormatInt(context.Config.GpuAccessor.QueryComputeLocalSizeX());
+                string localSizeY = NumberFormatter.FormatInt(context.Config.GpuAccessor.QueryComputeLocalSizeY());
+                string localSizeZ = NumberFormatter.FormatInt(context.Config.GpuAccessor.QueryComputeLocalSizeZ());
 
                 context.AppendLine(
                     "layout (" +
@@ -134,6 +253,55 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
                     $"local_size_y = {localSizeY}, " +
                     $"local_size_z = {localSizeZ}) in;");
                 context.AppendLine();
+            }
+
+            bool isFragment = context.Config.Stage == ShaderStage.Fragment;
+
+            if (isFragment && context.Config.GpuAccessor.QueryEarlyZForce())
+            {
+                context.AppendLine("layout(early_fragment_tests) in;");
+                context.AppendLine();
+            }
+
+            if ((context.Config.UsedFeatures & (FeatureFlags.FragCoordXY | FeatureFlags.IntegerSampling)) != 0)
+            {
+                string stage = OperandManager.GetShaderStagePrefix(context.Config.Stage);
+
+                int scaleElements = context.Config.GetTextureDescriptors().Length + context.Config.GetImageDescriptors().Length;
+
+                if (isFragment)
+                {
+                    scaleElements++; // Also includes render target scale, for gl_FragCoord.
+                }
+
+                DeclareSupportUniformBlock(context, info, context.Config.Stage, scaleElements);
+
+                if (context.Config.UsedFeatures.HasFlag(FeatureFlags.IntegerSampling) && scaleElements != 0)
+                {
+                    AppendHelperFunction(context, $"Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/TexelFetchScale_{stage}.glsl");
+                    context.AppendLine();
+                }
+            }
+            else
+            {
+                DeclareSupportUniformBlock(context, info, context.Config.Stage, 0);
+            }
+
+            if ((info.HelperFunctionsMask & HelperFunctionsMask.AtomicMinMaxS32Shared) != 0)
+            {
+                AppendHelperFunction(context, "Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/AtomicMinMaxS32Shared.glsl");
+            }
+
+            if ((info.HelperFunctionsMask & HelperFunctionsMask.AtomicMinMaxS32Storage) != 0)
+            {
+                AppendHelperFunction(context, "Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/AtomicMinMaxS32Storage.glsl");
+            }
+
+            if ((info.HelperFunctionsMask & HelperFunctionsMask.GlobalMemory) != 0)
+            {
+                AppendHelperFunction(context, context.Config.Options.TargetApi == TargetApi.Vulkan
+                    ? "Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/GlobalMemoryVk.glsl"
+                    : "Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/GlobalMemory.glsl");
             }
 
             if ((info.HelperFunctionsMask & HelperFunctionsMask.MultiplyHighS32) != 0)
@@ -166,15 +334,35 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
                 AppendHelperFunction(context, "Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/ShuffleXor.glsl");
             }
 
+            if ((info.HelperFunctionsMask & HelperFunctionsMask.StoreSharedSmallInt) != 0)
+            {
+                AppendHelperFunction(context, "Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/StoreSharedSmallInt.glsl");
+            }
+
+            if ((info.HelperFunctionsMask & HelperFunctionsMask.StoreStorageSmallInt) != 0)
+            {
+                AppendHelperFunction(context, "Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/StoreStorageSmallInt.glsl");
+            }
+
             if ((info.HelperFunctionsMask & HelperFunctionsMask.SwizzleAdd) != 0)
             {
                 AppendHelperFunction(context, "Ryujinx.Graphics.Shader/CodeGen/Glsl/HelperFunctions/SwizzleAdd.glsl");
             }
         }
 
-        public static void DeclareLocals(CodeGenContext context, StructuredProgramInfo info)
+        private static string GetTfLayout(TransformFeedbackOutput tfOutput)
         {
-            foreach (AstOperand decl in info.Locals)
+            if (tfOutput.Valid)
+            {
+                return $"layout (xfb_buffer = {tfOutput.Buffer}, xfb_offset = {tfOutput.Offset}, xfb_stride = {tfOutput.Stride}) ";
+            }
+
+            return string.Empty;
+        }
+
+        public static void DeclareLocals(CodeGenContext context, StructuredFunction function)
+        {
+            foreach (AstOperand decl in function.Locals)
             {
                 string name = context.OperandManager.DeclareLocal(decl);
 
@@ -182,43 +370,55 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
             }
         }
 
-        private static string GetVarTypeName(VariableType type)
+        public static string GetVarTypeName(VariableType type)
         {
             switch (type)
             {
                 case VariableType.Bool: return "bool";
-                case VariableType.F32:  return "precise float";
-                case VariableType.F64:  return "double";
-                case VariableType.S32:  return "int";
-                case VariableType.U32:  return "uint";
+                case VariableType.F32: return "precise float";
+                case VariableType.F64: return "double";
+                case VariableType.None: return "void";
+                case VariableType.S32: return "int";
+                case VariableType.U32: return "uint";
             }
 
             throw new ArgumentException($"Invalid variable type \"{type}\".");
         }
 
-        private static void DeclareUniforms(CodeGenContext context, StructuredProgramInfo info)
+        private static void DeclareUniforms(CodeGenContext context, BufferDescriptor[] descriptors)
         {
-            foreach (int cbufSlot in info.CBuffers.OrderBy(x => x))
+            string ubSize = "[" + NumberFormatter.FormatInt(Constants.ConstantBufferSize / 16) + "]";
+
+            if (context.Config.UsedFeatures.HasFlag(FeatureFlags.CbIndexing))
             {
                 string ubName = OperandManager.GetShaderStagePrefix(context.Config.Stage);
 
-                ubName += "_" + DefaultNames.UniformNamePrefix + cbufSlot;
+                ubName += "_" + DefaultNames.UniformNamePrefix;
 
-                context.CBufferDescriptors.Add(new BufferDescriptor(ubName, cbufSlot));
+                string blockName = $"{ubName}_{DefaultNames.BlockSuffix}";
 
-                context.AppendLine("layout (std140) uniform " + ubName);
-
+                context.AppendLine($"layout (binding = {context.Config.FirstConstantBufferBinding}, std140) uniform {blockName}");
                 context.EnterScope();
+                context.AppendLine("vec4 " + DefaultNames.DataName + ubSize + ";");
+                context.LeaveScope($" {ubName}[{NumberFormatter.FormatInt(descriptors.Max(x => x.Slot) + 1)}];");
+            }
+            else
+            {
+                foreach (var descriptor in descriptors)
+                {
+                    string ubName = OperandManager.GetShaderStagePrefix(context.Config.Stage);
 
-                string ubSize = "[" + NumberFormatter.FormatInt(Constants.ConstantBufferSize / 16) + "]";
+                    ubName += "_" + DefaultNames.UniformNamePrefix + descriptor.Slot;
 
-                context.AppendLine("vec4 " + OperandManager.GetUbName(context.Config.Stage, cbufSlot) + ubSize + ";");
-
-                context.LeaveScope(";");
+                    context.AppendLine($"layout (binding = {descriptor.Binding}, std140) uniform {ubName}");
+                    context.EnterScope();
+                    context.AppendLine("vec4 " + OperandManager.GetUbName(context.Config.Stage, descriptor.Slot, false) + ubSize + ";");
+                    context.LeaveScope(";");
+                }
             }
         }
 
-        private static void DeclareStorages(CodeGenContext context, StructuredProgramInfo info)
+        private static void DeclareStorages(CodeGenContext context, BufferDescriptor[] descriptors)
         {
             string sbName = OperandManager.GetShaderStagePrefix(context.Config.Stage);
 
@@ -226,274 +426,328 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl
 
             string blockName = $"{sbName}_{DefaultNames.BlockSuffix}";
 
-            int maxSlot = 0;
+            string layout = context.Config.Options.TargetApi == TargetApi.Vulkan ? ", set = 1" : string.Empty;
 
-            foreach (int sbufSlot in info.SBuffers)
-            {
-                context.SBufferDescriptors.Add(new BufferDescriptor($"{blockName}[{sbufSlot}]", sbufSlot));
-
-                if (maxSlot < sbufSlot)
-                {
-                    maxSlot = sbufSlot;
-                }
-            }
-
-            context.AppendLine("layout (std430) buffer " + blockName);
-
+            context.AppendLine($"layout (binding = {context.Config.FirstStorageBufferBinding}{layout}, std430) buffer {blockName}");
             context.EnterScope();
-
             context.AppendLine("uint " + DefaultNames.DataName + "[];");
-
-            string arraySize = NumberFormatter.FormatInt(maxSlot + 1);
-
-            context.LeaveScope($" {sbName}[{arraySize}];");
+            context.LeaveScope($" {sbName}[{NumberFormatter.FormatInt(descriptors.Max(x => x.Slot) + 1)}];");
         }
 
-        private static void DeclareSamplers(CodeGenContext context, StructuredProgramInfo info)
+        private static void DeclareSamplers(CodeGenContext context, TextureDescriptor[] descriptors)
         {
-            Dictionary<string, AstTextureOperation> samplers = new Dictionary<string, AstTextureOperation>();
-
-            // Texture instructions other than TextureSample (like TextureSize)
-            // may have incomplete sampler type information. In those cases,
-            // we prefer instead the more accurate information from the
-            // TextureSample instruction, if both are available.
-            foreach (AstTextureOperation texOp in info.Samplers.OrderBy(x => x.Handle * 2 + (x.Inst == Instruction.TextureSample ? 0 : 1)))
+            int arraySize = 0;
+            foreach (var descriptor in descriptors)
             {
-                string indexExpr = NumberFormatter.FormatInt(texOp.ArraySize);
-
-                string samplerName = OperandManager.GetSamplerName(context.Config.Stage, texOp, indexExpr);
-
-                if (!samplers.TryAdd(samplerName, texOp))
+                if (descriptor.Type.HasFlag(SamplerType.Indexed))
                 {
-                    continue;
-                }
-
-                string samplerTypeName = GetSamplerTypeName(texOp.Type);
-
-                context.AppendLine("uniform " + samplerTypeName + " " + samplerName + ";");
-            }
-
-            foreach (KeyValuePair<string, AstTextureOperation> kv in samplers)
-            {
-                string samplerName = kv.Key;
-
-                AstTextureOperation texOp = kv.Value;
-
-                TextureDescriptor desc;
-
-                if ((texOp.Flags & TextureFlags.Bindless) != 0)
-                {
-                    AstOperand operand = texOp.GetSource(0) as AstOperand;
-
-                    desc = new TextureDescriptor(samplerName, texOp.Type, operand.CbufSlot, operand.CbufOffset);
-
-                    context.TextureDescriptors.Add(desc);
-                }
-                else if ((texOp.Type & SamplerType.Indexed) != 0)
-                {
-                    for (int index = 0; index < texOp.ArraySize; index++)
+                    if (arraySize == 0)
                     {
-                        string indexExpr = NumberFormatter.FormatInt(index);
-
-                        string indexedSamplerName = OperandManager.GetSamplerName(context.Config.Stage, texOp, indexExpr);
-
-                        desc = new TextureDescriptor(indexedSamplerName, texOp.Type, texOp.Handle + index * 2);
-
-                        context.TextureDescriptors.Add(desc);
+                        arraySize = ShaderConfig.SamplerArraySize;
+                    }
+                    else if (--arraySize != 0)
+                    {
+                        continue;
                     }
                 }
-                else
-                {
-                    desc = new TextureDescriptor(samplerName, texOp.Type, texOp.Handle);
 
-                    context.TextureDescriptors.Add(desc);
+                string indexExpr = NumberFormatter.FormatInt(arraySize);
+
+                string samplerName = OperandManager.GetSamplerName(
+                    context.Config.Stage,
+                    descriptor.CbufSlot,
+                    descriptor.HandleIndex,
+                    descriptor.Type.HasFlag(SamplerType.Indexed),
+                    indexExpr);
+
+                string samplerTypeName = descriptor.Type.ToGlslSamplerType();
+
+                string layout = string.Empty;
+
+                if (context.Config.Options.TargetApi == TargetApi.Vulkan)
+                {
+                    layout = ", set = 2";
                 }
+
+                context.AppendLine($"layout (binding = {descriptor.Binding}{layout}) uniform {samplerTypeName} {samplerName};");
             }
         }
 
-        private static void DeclareImages(CodeGenContext context, StructuredProgramInfo info)
+        private static void DeclareImages(CodeGenContext context, TextureDescriptor[] descriptors)
         {
-            Dictionary<string, AstTextureOperation> images = new Dictionary<string, AstTextureOperation>();
-
-            foreach (AstTextureOperation texOp in info.Images.OrderBy(x => x.Handle))
+            int arraySize = 0;
+            foreach (var descriptor in descriptors)
             {
-                string indexExpr = NumberFormatter.FormatInt(texOp.ArraySize);
-
-                string imageName = OperandManager.GetImageName(context.Config.Stage, texOp, indexExpr);
-
-                if (!images.TryAdd(imageName, texOp))
+                if (descriptor.Type.HasFlag(SamplerType.Indexed))
                 {
-                    continue;
+                    if (arraySize == 0)
+                    {
+                        arraySize = ShaderConfig.SamplerArraySize;
+                    }
+                    else if (--arraySize != 0)
+                    {
+                        continue;
+                    }
                 }
 
-                string layout = texOp.Format.ToGlslFormat();
+                string indexExpr = NumberFormatter.FormatInt(arraySize);
+
+                string imageName = OperandManager.GetImageName(
+                    context.Config.Stage,
+                    descriptor.CbufSlot,
+                    descriptor.HandleIndex,
+                    descriptor.Format,
+                    descriptor.Type.HasFlag(SamplerType.Indexed),
+                    indexExpr);
+
+                string imageTypeName = descriptor.Type.ToGlslImageType(descriptor.Format.GetComponentType());
+
+                if (descriptor.Flags.HasFlag(TextureUsageFlags.ImageCoherent))
+                {
+                    imageTypeName = "coherent " + imageTypeName;
+                }
+
+                string layout = descriptor.Format.ToGlslFormat();
 
                 if (!string.IsNullOrEmpty(layout))
                 {
-                    layout = "layout(" + layout + ") ";
+                    layout = ", " + layout;
                 }
 
-                string imageTypeName = GetImageTypeName(texOp.Type, texOp.Format.GetComponentType());
-
-                context.AppendLine("uniform " + layout + imageTypeName + " " + imageName + ";");
-            }
-
-            foreach (KeyValuePair<string, AstTextureOperation> kv in images)
-            {
-                string imageName = kv.Key;
-
-                AstTextureOperation texOp = kv.Value;
-
-                if ((texOp.Type & SamplerType.Indexed) != 0)
+                if (context.Config.Options.TargetApi == TargetApi.Vulkan)
                 {
-                    for (int index = 0; index < texOp.ArraySize; index++)
-                    {
-                        string indexExpr = NumberFormatter.FormatInt(index);
-
-                        string indexedSamplerName = OperandManager.GetSamplerName(context.Config.Stage, texOp, indexExpr);
-
-                        var desc = new TextureDescriptor(indexedSamplerName, texOp.Type, texOp.Handle + index * 2);
-
-                        context.TextureDescriptors.Add(desc);
-                    }
+                    layout = $", set = 3{layout}";
                 }
-                else
-                {
-                    var desc = new TextureDescriptor(imageName, texOp.Type, texOp.Handle);
 
-                    context.ImageDescriptors.Add(desc);
-                }
+                context.AppendLine($"layout (binding = {descriptor.Binding}{layout}) uniform {imageTypeName} {imageName};");
             }
         }
 
         private static void DeclareInputAttributes(CodeGenContext context, StructuredProgramInfo info)
         {
-            string suffix = context.Config.Stage == ShaderStage.Geometry ? "[]" : string.Empty;
-
-            foreach (int attr in info.IAttributes.OrderBy(x => x))
+            if (context.Config.UsedFeatures.HasFlag(FeatureFlags.IaIndexing))
             {
-                string iq = string.Empty;
+                string suffix = context.Config.Stage == ShaderStage.Geometry ? "[]" : string.Empty;
 
-                if (context.Config.Stage == ShaderStage.Fragment)
+                context.AppendLine($"layout (location = 0) in vec4 {DefaultNames.IAttributePrefix}{suffix}[{Constants.MaxAttributes}];");
+            }
+            else
+            {
+                int usedAttributes = context.Config.UsedInputAttributes | context.Config.PassthroughAttributes;
+                while (usedAttributes != 0)
                 {
-                    iq = context.Config.ImapTypes[attr].GetFirstUsedType() switch
-                    {
-                        PixelImap.Constant => "flat ",
-                        PixelImap.ScreenLinear => "noperspective ",
-                        _ => string.Empty
-                    };
+                    int index = BitOperations.TrailingZeroCount(usedAttributes);
+                    DeclareInputAttribute(context, info, index);
+                    usedAttributes &= ~(1 << index);
+                }
+            }
+        }
+
+        private static void DeclareInputAttributesPerPatch(CodeGenContext context, HashSet<int> attrs)
+        {
+            foreach (int attr in attrs.Order())
+            {
+                DeclareInputAttributePerPatch(context, attr);
+            }
+        }
+
+        private static void DeclareInputAttribute(CodeGenContext context, StructuredProgramInfo info, int attr)
+        {
+            string suffix = AttributeInfo.IsArrayAttributeGlsl(context.Config.Stage, isOutAttr: false) ? "[]" : string.Empty;
+            string iq = string.Empty;
+
+            if (context.Config.Stage == ShaderStage.Fragment)
+            {
+                iq = context.Config.ImapTypes[attr].GetFirstUsedType() switch
+                {
+                    PixelImap.Constant => "flat ",
+                    PixelImap.ScreenLinear => "noperspective ",
+                    _ => string.Empty
+                };
+            }
+
+            string name = $"{DefaultNames.IAttributePrefix}{attr}";
+
+            if (context.Config.TransformFeedbackEnabled && context.Config.Stage == ShaderStage.Fragment)
+            {
+                for (int c = 0; c < 4; c++)
+                {
+                    char swzMask = "xyzw"[c];
+
+                    context.AppendLine($"layout (location = {attr}, component = {c}) {iq}in float {name}_{swzMask}{suffix};");
+                }
+            }
+            else
+            {
+                bool passthrough = (context.Config.PassthroughAttributes & (1 << attr)) != 0;
+                string pass = passthrough && context.Config.GpuAccessor.QueryHostSupportsGeometryShaderPassthrough() ? "passthrough, " : string.Empty;
+                string type;
+
+                if (context.Config.Stage == ShaderStage.Vertex)
+                {
+                    type = context.Config.GpuAccessor.QueryAttributeType(attr).ToVec4Type();
+                }
+                else
+                {
+                    type = AttributeType.Float.ToVec4Type();
                 }
 
-                context.AppendLine($"layout (location = {attr}) {iq}in vec4 {DefaultNames.IAttributePrefix}{attr}{suffix};");
+                context.AppendLine($"layout ({pass}location = {attr}) {iq}in {type} {name}{suffix};");
             }
+        }
+
+        private static void DeclareInputAttributePerPatch(CodeGenContext context, int attr)
+        {
+            int location = context.Config.GetPerPatchAttributeLocation(attr);
+            string name = $"{DefaultNames.PerPatchAttributePrefix}{attr}";
+
+            context.AppendLine($"layout (location = {location}) patch in vec4 {name};");
         }
 
         private static void DeclareOutputAttributes(CodeGenContext context, StructuredProgramInfo info)
         {
-            if (context.Config.Stage == ShaderStage.Fragment)
+            if (context.Config.UsedFeatures.HasFlag(FeatureFlags.OaIndexing))
             {
-                DeclareUsedOutputAttributes(context, info);
+                context.AppendLine($"layout (location = 0) out vec4 {DefaultNames.OAttributePrefix}[{Constants.MaxAttributes}];");
             }
             else
             {
-                DeclareAllOutputAttributes(context, info);
+                int usedAttributes = context.Config.UsedOutputAttributes;
+                while (usedAttributes != 0)
+                {
+                    int index = BitOperations.TrailingZeroCount(usedAttributes);
+                    DeclareOutputAttribute(context, index);
+                    usedAttributes &= ~(1 << index);
+                }
             }
         }
 
-        private static void DeclareUsedOutputAttributes(CodeGenContext context, StructuredProgramInfo info)
+        private static void DeclareOutputAttribute(CodeGenContext context, int attr)
         {
-            foreach (int attr in info.OAttributes.OrderBy(x => x))
+            string suffix = AttributeInfo.IsArrayAttributeGlsl(context.Config.Stage, isOutAttr: true) ? "[]" : string.Empty;
+            string name = $"{DefaultNames.OAttributePrefix}{attr}{suffix}";
+
+            if (context.Config.TransformFeedbackEnabled && context.Config.LastInVertexPipeline)
             {
-                context.AppendLine($"layout (location = {attr}) out vec4 {DefaultNames.OAttributePrefix}{attr};");
+                int attrOffset = AttributeConsts.UserAttributeBase + attr * 16;
+                int components = context.Config.LastInPipeline ? context.Info.GetTransformFeedbackOutputComponents(attrOffset) : 1;
+
+                if (components > 1)
+                {
+                    string type = components switch
+                    {
+                        2 => "vec2",
+                        3 => "vec3",
+                        4 => "vec4",
+                        _ => "float"
+                    };
+
+                    string xfb = string.Empty;
+
+                    var tfOutput = context.Info.GetTransformFeedbackOutput(attrOffset);
+                    if (tfOutput.Valid)
+                    {
+                        xfb = $", xfb_buffer = {tfOutput.Buffer}, xfb_offset = {tfOutput.Offset}, xfb_stride = {tfOutput.Stride}";
+                    }
+
+                    context.AppendLine($"layout (location = {attr}{xfb}) out {type} {name};");
+                }
+                else
+                {
+                    for (int c = 0; c < 4; c++)
+                    {
+                        char swzMask = "xyzw"[c];
+
+                        string xfb = string.Empty;
+
+                        var tfOutput = context.Info.GetTransformFeedbackOutput(attrOffset + c * 4);
+                        if (tfOutput.Valid)
+                        {
+                            xfb = $", xfb_buffer = {tfOutput.Buffer}, xfb_offset = {tfOutput.Offset}, xfb_stride = {tfOutput.Stride}";
+                        }
+
+                        context.AppendLine($"layout (location = {attr}, component = {c}{xfb}) out float {name}_{swzMask};");
+                    }
+                }
+            }
+            else
+            {
+                context.AppendLine($"layout (location = {attr}) out vec4 {name};");
             }
         }
 
-        private static void DeclareAllOutputAttributes(CodeGenContext context, StructuredProgramInfo info)
+        private static void DeclareUsedOutputAttributesPerPatch(CodeGenContext context, HashSet<int> attrs)
         {
-            for (int attr = 0; attr < MaxAttributes; attr++)
+            foreach (int attr in attrs.Order())
             {
-                context.AppendLine($"layout (location = {attr}) out vec4 {DefaultNames.OAttributePrefix}{attr};");
+                DeclareOutputAttributePerPatch(context, attr);
+            }
+        }
+
+        private static void DeclareOutputAttributePerPatch(CodeGenContext context, int attr)
+        {
+            int location = context.Config.GetPerPatchAttributeLocation(attr);
+            string name = $"{DefaultNames.PerPatchAttributePrefix}{attr}";
+
+            context.AppendLine($"layout (location = {location}) patch out vec4 {name};");
+        }
+
+        private static void DeclareSupportUniformBlock(CodeGenContext context, StructuredProgramInfo info, ShaderStage stage, int scaleElements)
+        {
+            bool needsSupportBlock = stage == ShaderStage.Fragment ||
+                (info.HelperFunctionsMask & HelperFunctionsMask.GlobalMemory) != 0 ||
+                (context.Config.LastInVertexPipeline && context.Config.GpuAccessor.QueryViewportTransformDisable());
+
+            if (!needsSupportBlock && scaleElements == 0)
+            {
+                return;
             }
 
-            foreach (int attr in info.OAttributes.OrderBy(x => x).Where(x => x >= MaxAttributes))
+            context.AppendLine($"layout (binding = 0, std140) uniform {DefaultNames.SupportBlockName}");
+            context.EnterScope();
+
+            switch (stage)
             {
-                context.AppendLine($"layout (location = {attr}) out vec4 {DefaultNames.OAttributePrefix}{attr};");
+                case ShaderStage.Fragment:
+                case ShaderStage.Vertex:
+                    context.AppendLine($"uint {DefaultNames.SupportBlockAlphaTestName};");
+                    context.AppendLine($"bool {DefaultNames.SupportBlockIsBgraName}[{SupportBuffer.FragmentIsBgraCount}];");
+                    context.AppendLine($"vec4 {DefaultNames.SupportBlockViewportInverse};");
+                    context.AppendLine($"int {DefaultNames.SupportBlockFragmentScaleCount};");
+                    break;
+                case ShaderStage.Compute:
+                    context.AppendLine($"uint s_reserved[{SupportBuffer.ComputeRenderScaleOffset / SupportBuffer.FieldSize}];");
+                    break;
             }
+
+            context.AppendLine($"float {DefaultNames.SupportBlockRenderScaleName}[{SupportBuffer.RenderScaleMaxCount}];");
+            context.AppendLine($"uvec4 {DefaultNames.SupportBlockPageTableBasePointerName};");
+
+            context.LeaveScope(";");
+            context.AppendLine();
         }
 
         private static void AppendHelperFunction(CodeGenContext context, string filename)
         {
             string code = EmbeddedResources.ReadAllText(filename);
 
-            context.AppendLine(code.Replace("\t", CodeGenContext.Tab));
+            code = code.Replace("\t", CodeGenContext.Tab);
+            code = code.Replace("$SHARED_MEM$", DefaultNames.SharedMemoryName);
+            code = code.Replace("$STORAGE_MEM$", OperandManager.GetShaderStagePrefix(context.Config.Stage) + "_" + DefaultNames.StorageNamePrefix);
+
+            if (context.Config.GpuAccessor.QueryHostSupportsShaderBallot())
+            {
+                code = code.Replace("$SUBGROUP_INVOCATION$", "gl_SubGroupInvocationARB");
+                code = code.Replace("$SUBGROUP_BROADCAST$", "readInvocationARB");
+            }
+            else
+            {
+                code = code.Replace("$SUBGROUP_INVOCATION$", "gl_SubgroupInvocationID");
+                code = code.Replace("$SUBGROUP_BROADCAST$", "subgroupBroadcast");
+            }
+
+            context.AppendLine(code);
             context.AppendLine();
-        }
-
-        private static string GetSamplerTypeName(SamplerType type)
-        {
-            string typeName;
-
-            switch (type & SamplerType.Mask)
-            {
-                case SamplerType.Texture1D:     typeName = "sampler1D";     break;
-                case SamplerType.TextureBuffer: typeName = "samplerBuffer"; break;
-                case SamplerType.Texture2D:     typeName = "sampler2D";     break;
-                case SamplerType.Texture3D:     typeName = "sampler3D";     break;
-                case SamplerType.TextureCube:   typeName = "samplerCube";   break;
-
-                default: throw new ArgumentException($"Invalid sampler type \"{type}\".");
-            }
-
-            if ((type & SamplerType.Multisample) != 0)
-            {
-                typeName += "MS";
-            }
-
-            if ((type & SamplerType.Array) != 0)
-            {
-                typeName += "Array";
-            }
-
-            if ((type & SamplerType.Shadow) != 0)
-            {
-                typeName += "Shadow";
-            }
-
-            return typeName;
-        }
-
-        private static string GetImageTypeName(SamplerType type, VariableType componentType)
-        {
-            string typeName;
-
-            switch (type & SamplerType.Mask)
-            {
-                case SamplerType.Texture1D:     typeName = "image1D";     break;
-                case SamplerType.TextureBuffer: typeName = "imageBuffer"; break;
-                case SamplerType.Texture2D:     typeName = "image2D";     break;
-                case SamplerType.Texture3D:     typeName = "image3D";     break;
-                case SamplerType.TextureCube:   typeName = "imageCube";   break;
-
-                default: throw new ArgumentException($"Invalid sampler type \"{type}\".");
-            }
-
-            if ((type & SamplerType.Multisample) != 0)
-            {
-                typeName += "MS";
-            }
-
-            if ((type & SamplerType.Array) != 0)
-            {
-                typeName += "Array";
-            }
-
-            switch (componentType)
-            {
-                case VariableType.U32: typeName = 'u' + typeName; break;
-                case VariableType.S32: typeName = 'i' + typeName; break;
-            }
-
-            return typeName;
         }
     }
 }

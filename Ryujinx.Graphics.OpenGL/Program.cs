@@ -2,166 +2,95 @@ using OpenTK.Graphics.OpenGL;
 using Ryujinx.Common.Logging;
 using Ryujinx.Graphics.GAL;
 using Ryujinx.Graphics.Shader;
+using Ryujinx.Graphics.Shader.Translation;
+using System;
+using System.Buffers.Binary;
 
 namespace Ryujinx.Graphics.OpenGL
 {
     class Program : IProgram
     {
-        private const int ShaderStages = 6;
-
-        private const int UbStageShift  = 5;
-        private const int SbStageShift  = 4;
-        private const int TexStageShift = 5;
-        private const int ImgStageShift = 3;
-
-        private const int UbsPerStage  = 1 << UbStageShift;
-        private const int SbsPerStage  = 1 << SbStageShift;
-        private const int TexsPerStage = 1 << TexStageShift;
-        private const int ImgsPerStage = 1 << ImgStageShift;
-
         public int Handle { get; private set; }
 
-        public bool IsLinked { get; private set; }
-
-        private int[] _ubBindingPoints;
-        private int[] _sbBindingPoints;
-        private int[] _textureUnits;
-        private int[] _imageUnits;
-
-        public Program(IShader[] shaders)
+        public bool IsLinked
         {
-            _ubBindingPoints = new int[UbsPerStage  * ShaderStages];
-            _sbBindingPoints = new int[SbsPerStage  * ShaderStages];
-            _textureUnits    = new int[TexsPerStage * ShaderStages];
-            _imageUnits      = new int[ImgsPerStage * ShaderStages];
-
-            for (int index = 0; index < _ubBindingPoints.Length; index++)
+            get
             {
-                _ubBindingPoints[index] = -1;
-            }
+                if (_status == ProgramLinkStatus.Incomplete)
+                {
+                    CheckProgramLink(true);
+                }
 
-            for (int index = 0; index < _sbBindingPoints.Length; index++)
-            {
-                _sbBindingPoints[index] = -1;
+                return _status == ProgramLinkStatus.Success;
             }
+        }
 
-            for (int index = 0; index < _textureUnits.Length; index++)
-            {
-                _textureUnits[index] = -1;
-            }
+        private ProgramLinkStatus _status = ProgramLinkStatus.Incomplete;
+        private int[] _shaderHandles;
 
-            for (int index = 0; index < _imageUnits.Length; index++)
-            {
-                _imageUnits[index] = -1;
-            }
+        public bool HasFragmentShader;
+        public int FragmentOutputMap { get; }
 
+        public Program(ShaderSource[] shaders, int fragmentOutputMap)
+        {
             Handle = GL.CreateProgram();
+
+            GL.ProgramParameter(Handle, ProgramParameterName.ProgramBinaryRetrievableHint, 1);
+
+            _shaderHandles = new int[shaders.Length];
 
             for (int index = 0; index < shaders.Length; index++)
             {
-                int shaderHandle = ((Shader)shaders[index]).Handle;
+                ShaderSource shader = shaders[index];
+
+                if (shader.Stage == ShaderStage.Fragment)
+                {
+                    HasFragmentShader = true;
+                }
+
+                int shaderHandle = GL.CreateShader(shader.Stage.Convert());
+
+                switch (shader.Language)
+                {
+                    case TargetLanguage.Glsl:
+                        GL.ShaderSource(shaderHandle, shader.Code);
+                        GL.CompileShader(shaderHandle);
+                        break;
+                    case TargetLanguage.Spirv:
+                        GL.ShaderBinary(1, ref shaderHandle, (BinaryFormat)All.ShaderBinaryFormatSpirVArb, shader.BinaryCode, shader.BinaryCode.Length);
+                        GL.SpecializeShader(shaderHandle, "main", 0, (int[])null, (int[])null);
+                        break;
+                }
 
                 GL.AttachShader(Handle, shaderHandle);
+
+                _shaderHandles[index] = shaderHandle;
             }
 
             GL.LinkProgram(Handle);
 
-            for (int index = 0; index < shaders.Length; index++)
-            {
-                int shaderHandle = ((Shader)shaders[index]).Handle;
+            FragmentOutputMap = fragmentOutputMap;
+        }
 
-                GL.DetachShader(Handle, shaderHandle);
+        public Program(ReadOnlySpan<byte> code, bool hasFragmentShader, int fragmentOutputMap)
+        {
+            Handle = GL.CreateProgram();
+
+            if (code.Length >= 4)
+            {
+                BinaryFormat binaryFormat = (BinaryFormat)BinaryPrimitives.ReadInt32LittleEndian(code.Slice(code.Length - 4, 4));
+
+                unsafe
+                {
+                    fixed (byte* ptr = code)
+                    {
+                        GL.ProgramBinary(Handle, binaryFormat, (IntPtr)ptr, code.Length - 4);
+                    }
+                }
             }
 
-            CheckProgramLink();
-
-            Bind();
-
-            int ubBindingPoint = 0;
-            int sbBindingPoint = 0;
-            int textureUnit    = 0;
-            int imageUnit      = 0;
-
-            for (int index = 0; index < shaders.Length; index++)
-            {
-                Shader shader = (Shader)shaders[index];
-
-                foreach (BufferDescriptor descriptor in shader.Info.CBuffers)
-                {
-                    int location = GL.GetUniformBlockIndex(Handle, descriptor.Name);
-
-                    if (location < 0)
-                    {
-                        continue;
-                    }
-
-                    GL.UniformBlockBinding(Handle, location, ubBindingPoint);
-
-                    int bpIndex = (int)shader.Stage << UbStageShift | descriptor.Slot;
-
-                    _ubBindingPoints[bpIndex] = ubBindingPoint;
-
-                    ubBindingPoint++;
-                }
-
-                foreach (BufferDescriptor descriptor in shader.Info.SBuffers)
-                {
-                    int location = GL.GetProgramResourceIndex(Handle, ProgramInterface.ShaderStorageBlock, descriptor.Name);
-
-                    if (location < 0)
-                    {
-                        continue;
-                    }
-
-                    GL.ShaderStorageBlockBinding(Handle, location, sbBindingPoint);
-
-                    int bpIndex = (int)shader.Stage << SbStageShift | descriptor.Slot;
-
-                    _sbBindingPoints[bpIndex] = sbBindingPoint;
-
-                    sbBindingPoint++;
-                }
-
-                int samplerIndex = 0;
-
-                foreach (TextureDescriptor descriptor in shader.Info.Textures)
-                {
-                    int location = GL.GetUniformLocation(Handle, descriptor.Name);
-
-                    if (location < 0)
-                    {
-                        continue;
-                    }
-
-                    GL.Uniform1(location, textureUnit);
-
-                    int uIndex = (int)shader.Stage << TexStageShift | samplerIndex++;
-
-                    _textureUnits[uIndex] = textureUnit;
-
-                    textureUnit++;
-                }
-
-                int imageIndex = 0;
-
-                foreach (TextureDescriptor descriptor in shader.Info.Images)
-                {
-                    int location = GL.GetUniformLocation(Handle, descriptor.Name);
-
-                    if (location < 0)
-                    {
-                        continue;
-                    }
-
-                    GL.Uniform1(location, imageUnit);
-
-                    int uIndex = (int)shader.Stage << ImgStageShift | imageIndex++;
-
-                    _imageUnits[uIndex] = imageUnit;
-
-                    imageUnit++;
-                }
-            }
+            HasFragmentShader = hasFragmentShader;
+            FragmentOutputMap = fragmentOutputMap;
         }
 
         public void Bind()
@@ -169,38 +98,59 @@ namespace Ryujinx.Graphics.OpenGL
             GL.UseProgram(Handle);
         }
 
-        public int GetUniformBufferBindingPoint(ShaderStage stage, int index)
+        public ProgramLinkStatus CheckProgramLink(bool blocking)
         {
-            return _ubBindingPoints[(int)stage << UbStageShift | index];
-        }
+            if (!blocking && HwCapabilities.SupportsParallelShaderCompile)
+            {
+                GL.GetProgram(Handle, (GetProgramParameterName)ArbParallelShaderCompile.CompletionStatusArb, out int completed);
 
-        public int GetStorageBufferBindingPoint(ShaderStage stage, int index)
-        {
-            return _sbBindingPoints[(int)stage << SbStageShift | index];
-        }
+                if (completed == 0)
+                {
+                    return ProgramLinkStatus.Incomplete;
+                }
+            }
 
-        public int GetTextureUnit(ShaderStage stage, int index)
-        {
-            return _textureUnits[(int)stage << TexStageShift | index];
-        }
-
-        public int GetImageUnit(ShaderStage stage, int index)
-        {
-            return _imageUnits[(int)stage << ImgStageShift | index];
-        }
-
-        private void CheckProgramLink()
-        {
             GL.GetProgram(Handle, GetProgramParameterName.LinkStatus, out int status);
+            DeleteShaders();
 
             if (status == 0)
             {
                 // Use GL.GetProgramInfoLog(Handle), it may be too long to print on the log.
-                Logger.PrintDebug(LogClass.Gpu, "Shader linking failed.");
+                _status = ProgramLinkStatus.Failure;
+                Logger.Debug?.Print(LogClass.Gpu, "Shader linking failed.");
             }
             else
             {
-                IsLinked = true;
+                _status = ProgramLinkStatus.Success;
+            }
+
+            return _status;
+        }
+
+        public byte[] GetBinary()
+        {
+            GL.GetProgram(Handle, (GetProgramParameterName)All.ProgramBinaryLength, out int size);
+
+            byte[] data = new byte[size + 4];
+
+            GL.GetProgramBinary(Handle, size, out _, out BinaryFormat binFormat, data);
+
+            BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(size, 4), (int)binFormat);
+
+            return data;
+        }
+
+        private void DeleteShaders()
+        {
+            if (_shaderHandles != null)
+            {
+                foreach (int shaderHandle in _shaderHandles)
+                {
+                    GL.DetachShader(Handle, shaderHandle);
+                    GL.DeleteShader(shaderHandle);
+                }
+
+                _shaderHandles = null;
             }
         }
 
@@ -208,6 +158,7 @@ namespace Ryujinx.Graphics.OpenGL
         {
             if (Handle != 0)
             {
+                DeleteShaders();
                 GL.DeleteProgram(Handle);
 
                 Handle = 0;

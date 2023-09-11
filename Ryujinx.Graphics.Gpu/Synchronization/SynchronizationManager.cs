@@ -70,7 +70,7 @@ namespace Ryujinx.Graphics.Gpu.Synchronization
         /// <param name="callback">The callback to call when the threshold is reached</param>
         /// <exception cref="System.ArgumentOutOfRangeException">Thrown when id >= MaxHardwareSyncpoints</exception>
         /// <returns>The created SyncpointWaiterHandle object or null if already past threshold</returns>
-        public SyncpointWaiterHandle RegisterCallbackOnSyncpoint(uint id, uint threshold, Action callback)
+        public SyncpointWaiterHandle RegisterCallbackOnSyncpoint(uint id, uint threshold, Action<SyncpointWaiterHandle> callback)
         {
             if (id >= MaxHardwareSyncpoints)
             {
@@ -112,19 +112,15 @@ namespace Ryujinx.Graphics.Gpu.Synchronization
                 throw new ArgumentOutOfRangeException(nameof(id));
             }
 
-            bool warnAboutTimeout = false;
-
             // TODO: Remove this when GPU channel scheduling will be implemented.
             if (timeout == Timeout.InfiniteTimeSpan)
             {
                 timeout = TimeSpan.FromSeconds(1);
-
-                warnAboutTimeout = true;
             }
 
             using (ManualResetEvent waitEvent = new ManualResetEvent(false))
             {
-                var info = _syncpoints[id].RegisterCallback(threshold, () => waitEvent.Set());
+                var info = _syncpoints[id].RegisterCallback(threshold, (x) => waitEvent.Set());
 
                 if (info == null)
                 {
@@ -135,10 +131,7 @@ namespace Ryujinx.Graphics.Gpu.Synchronization
 
                 if (!signaled && info != null)
                 {
-                    if (warnAboutTimeout)
-                    {
-                        Logger.PrintError(LogClass.Gpu, $"Wait on syncpoint {id} for threshold {threshold} took more than {timeout.TotalMilliseconds}ms, resuming execution...");
-                    }
+                    Logger.Error?.Print(LogClass.Gpu, $"Wait on syncpoint {id} for threshold {threshold} took more than {timeout.TotalMilliseconds}ms, resuming execution...");
 
                     _syncpoints[id].UnregisterCallback(info);
                 }

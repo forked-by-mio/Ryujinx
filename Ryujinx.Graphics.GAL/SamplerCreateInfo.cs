@@ -1,9 +1,11 @@
 namespace Ryujinx.Graphics.GAL
 {
-    public struct SamplerCreateInfo
+    public readonly struct SamplerCreateInfo
     {
         public MinFilter MinFilter { get; }
         public MagFilter MagFilter { get; }
+
+        public bool SeamlessCubemap { get; }
 
         public AddressMode AddressU { get; }
         public AddressMode AddressV { get; }
@@ -22,6 +24,7 @@ namespace Ryujinx.Graphics.GAL
         public SamplerCreateInfo(
             MinFilter   minFilter,
             MagFilter   magFilter,
+            bool        seamlessCubemap,
             AddressMode addressU,
             AddressMode addressV,
             AddressMode addressP,
@@ -33,18 +36,37 @@ namespace Ryujinx.Graphics.GAL
             float       mipLodBias,
             float       maxAnisotropy)
         {
-            MinFilter     = minFilter;
-            MagFilter     = magFilter;
-            AddressU      = addressU;
-            AddressV      = addressV;
-            AddressP      = addressP;
-            CompareMode   = compareMode;
-            CompareOp     = compareOp;
-            BorderColor   = borderColor;
-            MinLod        = minLod;
-            MaxLod        = maxLod;
-            MipLodBias    = mipLodBias;
-            MaxAnisotropy = maxAnisotropy;
+            MinFilter       = minFilter;
+            MagFilter       = magFilter;
+            SeamlessCubemap = seamlessCubemap;
+            AddressU        = addressU;
+            AddressV        = addressV;
+            AddressP        = addressP;
+            CompareMode     = compareMode;
+            CompareOp       = compareOp;
+            BorderColor     = borderColor;
+            MinLod          = minLod;
+            MaxLod          = maxLod;
+            MipLodBias      = mipLodBias;
+            MaxAnisotropy   = maxAnisotropy;
+        }
+
+        public static SamplerCreateInfo Create(MinFilter minFilter, MagFilter magFilter)
+        {
+            return new SamplerCreateInfo(
+                minFilter,
+                magFilter,
+                false,
+                AddressMode.ClampToEdge,
+                AddressMode.ClampToEdge,
+                AddressMode.ClampToEdge,
+                CompareMode.None,
+                GAL.CompareOp.Always,
+                new ColorF(0f, 0f, 0f, 0f),
+                0f,
+                0f,
+                0f,
+                1f);
         }
     }
 }

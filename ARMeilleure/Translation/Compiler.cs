@@ -1,46 +1,53 @@
 using ARMeilleure.CodeGen;
+using ARMeilleure.CodeGen.Optimizations;
 using ARMeilleure.CodeGen.X86;
 using ARMeilleure.Diagnostics;
 using ARMeilleure.IntermediateRepresentation;
-using System;
-using System.Runtime.InteropServices;
 
 namespace ARMeilleure.Translation
 {
     static class Compiler
     {
-        public static T Compile<T>(ControlFlowGraph cfg, OperandType[] argTypes, OperandType retType, CompilerOptions options)
+        public static CompiledFunction Compile(
+            ControlFlowGraph cfg,
+            OperandType[]    argTypes,
+            OperandType      retType,
+            CompilerOptions  options)
         {
-            CompiledFunction func = CompileAndGetCf(cfg, argTypes, retType, options);
+            CompilerContext cctx = new(cfg, argTypes, retType, options);
 
-            IntPtr codePtr = JitCache.Map(func);
-
-            return Marshal.GetDelegateForFunctionPointer<T>(codePtr);
-        }
-
-        public static CompiledFunction CompileAndGetCf(ControlFlowGraph cfg, OperandType[] argTypes, OperandType retType, CompilerOptions options)
-        {
-            Logger.StartPass(PassName.Dominance);
-
-            Dominance.FindDominators(cfg);
-            Dominance.FindDominanceFrontiers(cfg);
-
-            Logger.EndPass(PassName.Dominance);
-
-            Logger.StartPass(PassName.SsaConstruction);
-
-            if ((options & CompilerOptions.SsaForm) != 0)
+            if (options.HasFlag(CompilerOptions.Optimize))
             {
+                Logger.StartPass(PassName.TailMerge);
+
+                TailMerge.RunPass(cctx);
+
+                Logger.EndPass(PassName.TailMerge, cfg);
+            }
+
+            if (options.HasFlag(CompilerOptions.SsaForm))
+            {
+                Logger.StartPass(PassName.Dominance);
+
+                Dominance.FindDominators(cfg);
+                Dominance.FindDominanceFrontiers(cfg);
+
+                Logger.EndPass(PassName.Dominance);
+
+                Logger.StartPass(PassName.SsaConstruction);
+
                 Ssa.Construct(cfg);
+
+                Logger.EndPass(PassName.SsaConstruction, cfg);
             }
             else
             {
+                Logger.StartPass(PassName.RegisterToLocal);
+
                 RegisterToLocal.Rename(cfg);
+
+                Logger.EndPass(PassName.RegisterToLocal, cfg);
             }
-
-            Logger.EndPass(PassName.SsaConstruction, cfg);
-
-            CompilerContext cctx = new CompilerContext(cfg, argTypes, retType, options);
 
             return CodeGenerator.Generate(cctx);
         }

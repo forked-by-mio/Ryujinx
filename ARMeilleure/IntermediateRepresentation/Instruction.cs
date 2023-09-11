@@ -1,28 +1,19 @@
 namespace ARMeilleure.IntermediateRepresentation
 {
-    enum Instruction
+    enum Instruction : ushort
     {
         Add,
         BitwiseAnd,
         BitwiseExclusiveOr,
         BitwiseNot,
         BitwiseOr,
-        Branch,
-        BranchIfFalse,
-        BranchIfTrue,
+        BranchIf,
         ByteSwap,
         Call,
+        Compare,
         CompareAndSwap,
-        CompareEqual,
-        CompareGreater,
-        CompareGreaterOrEqual,
-        CompareGreaterOrEqualUI,
-        CompareGreaterUI,
-        CompareLess,
-        CompareLessOrEqual,
-        CompareLessOrEqualUI,
-        CompareLessUI,
-        CompareNotEqual,
+        CompareAndSwap16,
+        CompareAndSwap8,
         ConditionalSelect,
         ConvertI64ToI32,
         ConvertToFP,
@@ -35,6 +26,7 @@ namespace ARMeilleure.IntermediateRepresentation
         Load16,
         Load8,
         LoadArgument,
+        MemoryBarrier,
         Multiply,
         Multiply64HighSI,
         Multiply64HighUI,
@@ -69,10 +61,10 @@ namespace ARMeilleure.IntermediateRepresentation
         ZeroExtend8,
 
         Clobber,
-        CpuId,
         Extended,
         Fill,
         LoadFromContext,
+        Phi,
         Spill,
         SpillArg,
         StoreToContext

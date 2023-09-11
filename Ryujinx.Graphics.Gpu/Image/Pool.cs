@@ -1,19 +1,26 @@
+using Ryujinx.Cpu.Tracking;
 using Ryujinx.Graphics.Gpu.Memory;
 using System;
+using System.Runtime.InteropServices;
 
 namespace Ryujinx.Graphics.Gpu.Image
 {
     /// <summary>
     /// Represents a pool of GPU resources, such as samplers or textures.
     /// </summary>
-    /// <typeparam name="T">Type of the GPU resource</typeparam>
-    abstract class Pool<T> : IDisposable
+    /// <typeparam name="T1">Type of the GPU resource</typeparam>
+    /// <typeparam name="T2">Type of the descriptor</typeparam>
+    abstract class Pool<T1, T2> : IDisposable where T2 : unmanaged
     {
         protected const int DescriptorSize = 0x20;
 
         protected GpuContext Context;
+        protected PhysicalMemory PhysicalMemory;
+        protected int SequenceNumber;
+        protected int ModifiedSequenceNumber;
 
-        protected T[] Items;
+        protected T1[] Items;
+        protected T2[] DescriptorCache;
 
         /// <summary>
         /// The maximum ID value of resources on the pool (inclusive).
@@ -33,19 +40,58 @@ namespace Ryujinx.Graphics.Gpu.Image
         /// </summary>
         public ulong Size { get; }
 
-        public Pool(GpuContext context, ulong address, int maximumId)
+        private readonly CpuMultiRegionHandle _memoryTracking;
+        private readonly Action<ulong, ulong> _modifiedDelegate;
+
+        private int _modifiedSequenceOffset;
+        private bool _modified;
+
+        /// <summary>
+        /// Creates a new instance of the GPU resource pool.
+        /// </summary>
+        /// <param name="context">GPU context that the pool belongs to</param>
+        /// <param name="physicalMemory">Physical memory where the resource descriptors are mapped</param>
+        /// <param name="address">Address of the pool in physical memory</param>
+        /// <param name="maximumId">Maximum index of an item on the pool (inclusive)</param>
+        public Pool(GpuContext context, PhysicalMemory physicalMemory, ulong address, int maximumId)
         {
-            Context   = context;
+            Context = context;
+            PhysicalMemory = physicalMemory;
             MaximumId = maximumId;
 
             int count = maximumId + 1;
 
-            ulong size = (ulong)(uint)count * DescriptorSize;;
+            ulong size = (ulong)(uint)count * DescriptorSize;
 
-            Items = new T[count];
+            Items = new T1[count];
+            DescriptorCache = new T2[count];
 
             Address = address;
             Size    = size;
+
+            _memoryTracking = physicalMemory.BeginGranularTracking(address, size);
+            _memoryTracking.RegisterPreciseAction(address, size, PreciseAction);
+            _modifiedDelegate = RegionModified;
+        }
+
+        /// <summary>
+        /// Gets the descriptor for a given ID.
+        /// </summary>
+        /// <param name="id">ID of the descriptor. This is effectively a zero-based index</param>
+        /// <returns>The descriptor</returns>
+        public T2 GetDescriptor(int id)
+        {
+            return PhysicalMemory.Read<T2>(Address + (ulong)id * DescriptorSize);
+        }
+
+        /// <summary>
+        /// Gets a reference to the descriptor for a given ID.
+        /// </summary>
+        /// <param name="id">ID of the descriptor. This is effectively a zero-based index</param>
+        /// <returns>A reference to the descriptor</returns>
+        public ref readonly T2 GetDescriptorRef(int id)
+        {
+            return ref MemoryMarshal.Cast<byte, T2>(PhysicalMemory.GetSpan(Address + (ulong)id * DescriptorSize, DescriptorSize))[0];
         }
 
         /// <summary>
@@ -53,7 +99,17 @@ namespace Ryujinx.Graphics.Gpu.Image
         /// </summary>
         /// <param name="id">ID of the resource. This is effectively a zero-based index</param>
         /// <returns>The GPU resource with the given ID</returns>
-        public abstract T Get(int id);
+        public abstract T1 Get(int id);
+
+        /// <summary>
+        /// Checks if a given ID is valid and inside the range of the pool.
+        /// </summary>
+        /// <param name="id">ID of the descriptor. This is effectively a zero-based index</param>
+        /// <returns>True if the specified ID is valid, false otherwise</returns>
+        public bool IsValidId(int id)
+        {
+            return (uint)id <= MaximumId;
+        }
 
         /// <summary>
         /// Synchronizes host memory with guest memory.
@@ -62,72 +118,84 @@ namespace Ryujinx.Graphics.Gpu.Image
         /// </summary>
         public void SynchronizeMemory()
         {
-            (ulong, ulong)[] modifiedRanges = Context.PhysicalMemory.GetModifiedRanges(Address, Size, ResourceName.TexturePool);
+            _modified = false;
+            _memoryTracking.QueryModified(_modifiedDelegate);
 
-            for (int index = 0; index < modifiedRanges.Length; index++)
+            if (_modified)
             {
-                (ulong mAddress, ulong mSize) = modifiedRanges[index];
-
-                if (mAddress < Address)
-                {
-                    mAddress = Address;
-                }
-
-                ulong maxSize = Address + Size - mAddress;
-
-                if (mSize > maxSize)
-                {
-                    mSize = maxSize;
-                }
-
-                InvalidateRangeImpl(mAddress, mSize);
+                UpdateModifiedSequence();
             }
         }
 
         /// <summary>
-        /// Invalidates a range of memory of the GPU resource pool.
-        /// Entries that falls inside the speicified range will be invalidated,
-        /// causing all the data to be reloaded from guest memory.
+        /// Indicate that a region of the pool was modified, and must be loaded from memory.
         /// </summary>
-        /// <param name="address">The start address of the range to invalidate</param>
-        /// <param name="size">The size of the range to invalidate</param>
-        public void InvalidateRange(ulong address, ulong size)
+        /// <param name="mAddress">Start address of the modified region</param>
+        /// <param name="mSize">Size of the modified region</param>
+        private void RegionModified(ulong mAddress, ulong mSize)
         {
-            ulong endAddress = address + size;
+            _modified = true;
 
-            ulong texturePoolEndAddress = Address + Size;
-
-            // If the range being invalidated is not overlapping the texture pool range,
-            // then we don't have anything to do, exit early.
-            if (address >= texturePoolEndAddress || endAddress <= Address)
+            if (mAddress < Address)
             {
-                return;
+                mAddress = Address;
             }
 
-            if (address < Address)
+            ulong maxSize = Address + Size - mAddress;
+
+            if (mSize > maxSize)
             {
-                address = Address;
+                mSize = maxSize;
             }
 
-            if (endAddress > texturePoolEndAddress)
+            InvalidateRangeImpl(mAddress, mSize);
+        }
+
+        /// <summary>
+        /// Updates the modified sequence number using the current sequence number and offset,
+        /// indicating that it has been modified.
+        /// </summary>
+        protected void UpdateModifiedSequence()
+        {
+            ModifiedSequenceNumber = SequenceNumber + _modifiedSequenceOffset;
+        }
+
+        /// <summary>
+        /// An action to be performed when a precise memory access occurs to this resource.
+        /// Makes sure that the dirty flags are checked.
+        /// </summary>
+        /// <param name="address">Address of the memory action</param>
+        /// <param name="size">Size in bytes</param>
+        /// <param name="write">True if the access was a write, false otherwise</param>
+        private bool PreciseAction(ulong address, ulong size, bool write)
+        {
+            if (write && Context.SequenceNumber == SequenceNumber)
             {
-                endAddress = texturePoolEndAddress;
+                if (ModifiedSequenceNumber == SequenceNumber + _modifiedSequenceOffset)
+                {
+                    // The modified sequence number is offset when PreciseActions occur so that
+                    // users checking it will see an increment and know the pool has changed since
+                    // their last look, even though the main SequenceNumber has not been changed.
+
+                    _modifiedSequenceOffset++;
+                }
+
+                // Force the pool to be checked again the next time it is used.
+                SequenceNumber--;
             }
 
-            size = endAddress - address;
-
-            InvalidateRangeImpl(address, size);
+            return false;
         }
 
         protected abstract void InvalidateRangeImpl(ulong address, ulong size);
 
-        protected abstract void Delete(T item);
+        protected abstract void Delete(T1 item);
 
         /// <summary>
         /// Performs the disposal of all resources stored on the pool.
         /// It's an error to try using the pool after disposal.
         /// </summary>
-        public void Dispose()
+        public virtual void Dispose()
         {
             if (Items != null)
             {
@@ -138,6 +206,7 @@ namespace Ryujinx.Graphics.Gpu.Image
 
                 Items = null;
             }
+            _memoryTracking.Dispose();
         }
     }
 }
